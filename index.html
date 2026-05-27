@@ -567,6 +567,9 @@
             <div class="button-row">
               <button class="btn primary" id="runBtn">运行选中股票</button>
               <button class="btn ghost" id="exportBtn">导出配置</button>
+              <button class="btn ghost" id="importBtn">导入配置</button>
+              <button class="btn ghost" id="syncLinkBtn" style="border-color: var(--blue); color: var(--blue);">生成同步链接</button>
+              <input type="file" id="importFile" accept=".json" style="display: none;">
             </div>
           </div>
         </section>
@@ -671,6 +674,7 @@
     function init() {
       initDates();
       loadSettings();
+      checkUrlSync(); // 自动检查并载入来自其他设备的同步链接
       bindEvents();
       renderStocks();
       renderEmptyChart();
@@ -687,6 +691,10 @@
       $("clearBtn").addEventListener("click", clearStocks);
       $("runBtn").addEventListener("click", runSelectedBacktests);
       $("exportBtn").addEventListener("click", exportConfig);
+      $("importBtn").addEventListener("click", () => $("importFile").click());
+      $("importFile").addEventListener("change", importConfig);
+      $("syncLinkBtn").addEventListener("click", generateSyncLink);
+
       document.querySelectorAll(".quick").forEach(btn => {
         btn.addEventListener("click", () => setQuickDate(btn.dataset.range));
       });
@@ -700,7 +708,8 @@
       });
       [
         "baseExposure", "addStep", "maxExposure", "defensiveExposure",
-        "observeDays", "hardExitDays", "maxPriceDrawdown", "maxEquityDrawdown"
+        "observeDays", "hardExitDays", "maxPriceDrawdown", "maxEquityDrawdown",
+        "startDate", "endDate"
       ].forEach(id => $(id).addEventListener("change", saveSettings));
       window.addEventListener("resize", () => chart && chart.resize());
     }
@@ -725,6 +734,7 @@
       }
       $("endDate").value = toDateInput(end);
       $("startDate").value = toDateInput(start);
+      saveSettings();
     }
 
     function loadStocks() {
@@ -753,7 +763,8 @@
     function saveSettings() {
       const ids = [
         "baseExposure", "addStep", "maxExposure", "defensiveExposure",
-        "observeDays", "hardExitDays", "maxPriceDrawdown", "maxEquityDrawdown"
+        "observeDays", "hardExitDays", "maxPriceDrawdown", "maxEquityDrawdown",
+        "startDate", "endDate"
       ];
       const payload = {};
       ids.forEach(id => payload[id] = $(id).value);
@@ -950,17 +961,16 @@
               low: Number(p[4]),
               volume: Number(p[5] || 0)
             };
-          }).filter(x => x.date <= end && Number.isFinite(x.close)); // 保留历史更早数据，只卡截止时间
+          }).filter(x => x.date <= end && Number.isFinite(x.close));
 
           await appendRealtimeIfNeeded(prices, secId, code, end);
           prices.sort((a, b) => a.date.localeCompare(b.date));
 
-          // 确认这1000天数据内确实包含指定的开始日期之后的数据
           const hasEnoughData = prices.some(x => x.date >= start);
           if (hasEnoughData) return prices;
           lastError = "区间数据不足";
         } catch (error) {
-          lastError = error.message || "行情接口失败";
+          lastError = error.message || "网络请求超时或被拦截";
         }
       }
       throw new Error(lastError || "无法获取行情");
@@ -986,9 +996,7 @@
     }
 
     function backtest(stock, prices, cfg, startDate) {
-      // 在带历史长周期的 prices 数组上计算均线
       const fullData = addIndicators(prices);
-      // 计算完均线后，再将数据切片只保留 >= startDate 的回测区间
       const data = fullData.filter(x => x.date >= startDate);
       if (data.length === 0) {
         throw new Error("所选时间区间内无交易数据");
@@ -1016,7 +1024,6 @@
           highestClose = highestClose === null ? row.close : Math.max(highestClose, row.close);
         } else {
           highestClose = null;
-          // 修正：仓位变为 0 时重置峰值净值。以此“遗忘”此前的净值回撤清仓，允许后续买回
           peakNav = nav;
         }
 
@@ -1236,7 +1243,6 @@
         legend: { 
           top: 0, 
           data: ["收盘价", "MA5", "MA10", "MA20", "策略净值", "仓位"],
-          // 修正：将均线（MA5/MA10/MA20）默认设置为隐藏
           selected: {
             "MA5": false,
             "MA10": false,
@@ -1269,7 +1275,12 @@
           { name: "仓位", type: "line", data: h.map(x => x.exposure), showSymbol: false, xAxisIndex: 1, yAxisIndex: 2, step: "end", areaStyle: { opacity: 0.18 }, lineStyle: { color: "#f59e0b", width: 1.5 } }
         ]
       }, true);
+      
+      // 优化：延迟重绘，强制让移动端浏览器渲染完排版后再自适应高宽
       chart.resize();
+      setTimeout(() => {
+        if (chart) chart.resize();
+      }, 150);
     }
 
     function renderEmptyChart() {
@@ -1287,6 +1298,9 @@
           style: { text: "运行回测后显示图表", fill: "#6b7280", fontSize: 14 }
         }
       });
+      setTimeout(() => {
+        if (chart) chart.resize();
+      }, 150);
     }
 
     function renderLogs() {
@@ -1314,14 +1328,117 @@
       `).join("");
     }
 
+    function getCombinedPayload() {
+      return {
+        stocks: stocks,
+        settings: {
+          baseExposure: $("baseExposure").value,
+          addStep: $("addStep").value,
+          maxExposure: $("maxExposure").value,
+          defensiveExposure: $("defensiveExposure").value,
+          observeDays: $("observeDays").value,
+          hardExitDays: $("hardExitDays").value,
+          maxPriceDrawdown: $("maxPriceDrawdown").value,
+          maxEquityDrawdown: $("maxEquityDrawdown").value,
+          startDate: $("startDate").value,
+          endDate: $("endDate").value
+        }
+      };
+    }
+
     function exportConfig() {
-      const blob = new Blob([JSON.stringify(stocks, null, 2)], { type: "application/json" });
+      const payload = getCombinedPayload();
+      const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
-      a.download = "value-trend-stocks.json";
+      a.download = "value-trend-config.json";
       a.click();
       URL.revokeObjectURL(url);
+    }
+
+    function importConfig(e) {
+      const file = e.target.files[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = function(evt) {
+        try {
+          const data = JSON.parse(evt.target.result);
+          applyConfigData(data);
+          alert("导入成功！已成功恢复股票池及参数配置。");
+        } catch (err) {
+          alert("导入失败，配置文件解析错误");
+        }
+      };
+      reader.readAsText(file);
+      e.target.value = "";
+    }
+
+    function generateSyncLink() {
+      try {
+        const payload = getCombinedPayload();
+        const jsonStr = JSON.stringify(payload);
+        const base64Data = utf8_to_b64(jsonStr);
+        const syncUrl = window.location.origin + window.location.pathname + window.location.search + "#sync=" + base64Data;
+        
+        navigator.clipboard.writeText(syncUrl).then(() => {
+          alert("同步链接已成功复制到剪贴板！\n\n您只需将此链接发到手机上（例如通过微信、QQ等），在手机浏览器中打开该链接，即可瞬间同步所有股票和参数配置。");
+        }).catch(() => {
+          const textArea = document.createElement("textarea");
+          textArea.value = syncUrl;
+          document.body.appendChild(textArea);
+          textArea.select();
+          document.execCommand("copy");
+          document.body.removeChild(textArea);
+          alert("同步链接已成功生成并复制到剪贴板！您可以在手机中打开此链接完成同步。");
+        });
+      } catch (err) {
+        alert("同步链接生成失败：" + err.message);
+      }
+    }
+
+    function checkUrlSync() {
+      const hash = window.location.hash;
+      if (hash.startsWith("#sync=")) {
+        try {
+          const base64Data = hash.substring(6);
+          const jsonStr = b64_to_utf8(base64Data);
+          const data = JSON.parse(jsonStr);
+          if (data && (Array.isArray(data) || (data.stocks && Array.isArray(data.stocks)))) {
+            if (confirm("检测到来自其他设备的同步数据，是否覆盖当前设备的本地配置？\n\n(确认后将自动更新您的股票池和回测参数)")) {
+              applyConfigData(data);
+              alert("同步成功！已成功载入配置数据。");
+              history.replaceState(null, document.title, window.location.pathname + window.location.search);
+              renderStocks();
+            }
+          }
+        } catch (err) {
+          console.error("同步链接解析失败：", err);
+        }
+      }
+    }
+
+    function applyConfigData(data) {
+      if (data && data.stocks && Array.isArray(data.stocks)) {
+        stocks = data.stocks;
+        saveStocks();
+        if (data.settings) {
+          Object.keys(data.settings).forEach(key => {
+            if ($(key)) $(key).value = data.settings[key];
+          });
+          saveSettings();
+        }
+      } else if (Array.isArray(data)) {
+        stocks = data;
+        saveStocks();
+      }
+    }
+
+    function utf8_to_b64(str) {
+      return btoa(unescape(encodeURIComponent(str)));
+    }
+    function b64_to_utf8(str) {
+      return decodeURIComponent(escape(atob(str)));
     }
 
     function movingAverage(rows, index, period) {
