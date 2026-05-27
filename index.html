@@ -567,6 +567,9 @@
             <div class="button-row">
               <button class="btn primary" id="runBtn">运行选中股票</button>
               <button class="btn ghost" id="exportBtn">导出配置</button>
+              <button class="btn ghost" id="importBtn">导入配置</button>
+              <button class="btn ghost" id="syncLinkBtn" style="border-color: var(--blue); color: var(--blue);">生成同步链接</button>
+              <input type="file" id="importFile" accept=".json" style="display: none;">
             </div>
           </div>
         </section>
@@ -671,6 +674,7 @@
     function init() {
       initDates();
       loadSettings();
+      checkUrlSync(); // 自动检查并载入来自其他设备的同步链接
       bindEvents();
       renderStocks();
       renderEmptyChart();
@@ -687,6 +691,10 @@
       $("clearBtn").addEventListener("click", clearStocks);
       $("runBtn").addEventListener("click", runSelectedBacktests);
       $("exportBtn").addEventListener("click", exportConfig);
+      $("importBtn").addEventListener("click", () => $("importFile").click());
+      $("importFile").addEventListener("change", importConfig);
+      $("syncLinkBtn").addEventListener("click", generateSyncLink);
+
       document.querySelectorAll(".quick").forEach(btn => {
         btn.addEventListener("click", () => setQuickDate(btn.dataset.range));
       });
@@ -700,7 +708,8 @@
       });
       [
         "baseExposure", "addStep", "maxExposure", "defensiveExposure",
-        "observeDays", "hardExitDays", "maxPriceDrawdown", "maxEquityDrawdown"
+        "observeDays", "hardExitDays", "maxPriceDrawdown", "maxEquityDrawdown",
+        "startDate", "endDate"
       ].forEach(id => $(id).addEventListener("change", saveSettings));
       window.addEventListener("resize", () => chart && chart.resize());
     }
@@ -725,6 +734,7 @@
       }
       $("endDate").value = toDateInput(end);
       $("startDate").value = toDateInput(start);
+      saveSettings();
     }
 
     function loadStocks() {
@@ -753,7 +763,8 @@
     function saveSettings() {
       const ids = [
         "baseExposure", "addStep", "maxExposure", "defensiveExposure",
-        "observeDays", "hardExitDays", "maxPriceDrawdown", "maxEquityDrawdown"
+        "observeDays", "hardExitDays", "maxPriceDrawdown", "maxEquityDrawdown",
+        "startDate", "endDate"
       ];
       const payload = {};
       ids.forEach(id => payload[id] = $(id).value);
@@ -878,7 +889,7 @@
       const start = $("startDate").value;
       const end = $("endDate").value || toDateInput(new Date());
       if (!start) {
-        alert("请选择开始日期");
+        alert("alert");
         return;
       }
 
@@ -896,7 +907,7 @@
         progress.textContent = `正在获取行情并回测：${stock.name} (${i + 1}/${selected.length})`;
         try {
           const prices = await fetchPrices(stock.code, start, end);
-          const result = backtest(stock, prices, getConfig());
+          const result = backtest(stock, prices, getConfig(), start);
           results.push(result);
           appendSummary(result, results.length - 1);
           if (selectedResultIndex < 0) selectResult(0);
@@ -950,10 +961,13 @@
               low: Number(p[4]),
               volume: Number(p[5] || 0)
             };
-          }).filter(x => x.date >= start && x.date <= end && Number.isFinite(x.close));
+          }).filter(x => x.date <= end && Number.isFinite(x.close));
 
           await appendRealtimeIfNeeded(prices, secId, code, end);
-          if (prices.length >= 25) return prices.sort((a, b) => a.date.localeCompare(b.date));
+          prices.sort((a, b) => a.date.localeCompare(b.date));
+
+          const hasEnoughData = prices.some(x => x.date >= start);
+          if (hasEnoughData) return prices;
           lastError = "区间数据不足";
         } catch (error) {
           lastError = error.message || "行情接口失败";
@@ -981,8 +995,13 @@
       } catch {}
     }
 
-    function backtest(stock, prices, cfg) {
-      const data = addIndicators(prices);
+    function backtest(stock, prices, cfg, startDate) {
+      const fullData = addIndicators(prices);
+      const data = fullData.filter(x => x.date >= startDate);
+      if (data.length === 0) {
+        throw new Error("所选时间区间内无交易数据");
+      }
+
       let nav = 1;
       let peakNav = 1;
       let exposure = 0;
@@ -1001,8 +1020,12 @@
         }
 
         exposure = targetNext;
-        if (exposure > 0) highestClose = highestClose === null ? row.close : Math.max(highestClose, row.close);
-        else highestClose = null;
+        if (exposure > 0) {
+          highestClose = highestClose === null ? row.close : Math.max(highestClose, row.close);
+        } else {
+          highestClose = null;
+          peakNav = nav;
+        }
 
         const equityDrawdown = nav / peakNav - 1;
         const decision = decide(row, exposure, highestClose, equityDrawdown, cfg);
@@ -1217,7 +1240,15 @@
             ].join("<br>");
           }
         },
-        legend: { top: 0, data: ["收盘价", "MA5", "MA10", "MA20", "策略净值", "仓位"] },
+        legend: { 
+          top: 0, 
+          data: ["收盘价", "MA5", "MA10", "MA20", "策略净值", "仓位"],
+          selected: {
+            "MA5": false,
+            "MA10": false,
+            "MA20": false
+          }
+        },
         grid: [
           { left: 48, right: 48, top: 42, height: "48%" },
           { left: 48, right: 48, top: "66%", height: "18%" }
@@ -1289,14 +1320,127 @@
       `).join("");
     }
 
+    // 导出打包配置（股票池 + 当前页面的参数设置）
+    function getCombinedPayload() {
+      return {
+        stocks: stocks,
+        settings: {
+          baseExposure: $("baseExposure").value,
+          addStep: $("addStep").value,
+          maxExposure: $("maxExposure").value,
+          defensiveExposure: $("defensiveExposure").value,
+          observeDays: $("observeDays").value,
+          hardExitDays: $("hardExitDays").value,
+          maxPriceDrawdown: $("maxPriceDrawdown").value,
+          maxEquityDrawdown: $("maxEquityDrawdown").value,
+          startDate: $("startDate").value,
+          endDate: $("endDate").value
+        }
+      };
+    }
+
     function exportConfig() {
-      const blob = new Blob([JSON.stringify(stocks, null, 2)], { type: "application/json" });
+      const payload = getCombinedPayload();
+      const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
-      a.download = "value-trend-stocks.json";
+      a.download = "value-trend-config.json";
       a.click();
       URL.revokeObjectURL(url);
+    }
+
+    function importConfig(e) {
+      const file = e.target.files[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = function(evt) {
+        try {
+          const data = JSON.parse(evt.target.result);
+          applyConfigData(data);
+          alert("导入成功！已成功恢复股票池及参数配置。");
+        } catch (err) {
+          alert("导入失败，配置文件解析错误");
+        }
+      };
+      reader.readAsText(file);
+      e.target.value = "";
+    }
+
+    // 新增：一键生成多端“同步链接”并自动复制到剪贴板
+    function generateSyncLink() {
+      try {
+        const payload = getCombinedPayload();
+        const jsonStr = JSON.stringify(payload);
+        const base64Data = utf8_to_b64(jsonStr);
+        // 生成形如：https://yourdomain.github.io/path/#sync=xxxx 的带有 Hash 数据的链接
+        const syncUrl = window.location.origin + window.location.pathname + window.location.search + "#sync=" + base64Data;
+        
+        // 自动复制到剪贴板
+        navigator.clipboard.writeText(syncUrl).then(() => {
+          alert("同步链接已成功复制到剪贴板！\n\n您只需将此链接发到手机上（例如通过微信、QQ等），在手机浏览器中打开该链接，即可瞬间同步所有股票和参数配置。");
+        }).catch(() => {
+          // 浏览器不支持 Clipboard API 的备用方案
+          const textArea = document.createElement("textarea");
+          textArea.value = syncUrl;
+          document.body.appendChild(textArea);
+          textArea.select();
+          document.execCommand("copy");
+          document.body.removeChild(textArea);
+          alert("同步链接已成功生成并复制到剪贴板！您可以在手机中打开此链接完成同步。");
+        });
+      } catch (err) {
+        alert("同步链接生成失败：" + err.message);
+      }
+    }
+
+    // 新增：检测并载入多端同步数据
+    function checkUrlSync() {
+      const hash = window.location.hash;
+      if (hash.startsWith("#sync=")) {
+        try {
+          const base64Data = hash.substring(6);
+          const jsonStr = b64_to_utf8(base64Data);
+          const data = JSON.parse(jsonStr);
+          if (data && (Array.isArray(data) || (data.stocks && Array.isArray(data.stocks)))) {
+            if (confirm("检测到来自其他设备的同步数据，是否覆盖当前设备的本地配置？\n\n(确认后将自动更新您的股票池和回测参数)")) {
+              applyConfigData(data);
+              alert("同步成功！已成功载入电脑端的配置数据。");
+              // 清除 URL 中的 Hash，避免每次刷新页面都重复弹窗提示
+              history.replaceState(null, document.title, window.location.pathname + window.location.search);
+              renderStocks();
+            }
+          }
+        } catch (err) {
+          console.error("同步链接解析失败：", err);
+        }
+      }
+    }
+
+    // 辅助函数：应用配置数据
+    function applyConfigData(data) {
+      if (data && data.stocks && Array.isArray(data.stocks)) {
+        stocks = data.stocks;
+        saveStocks();
+        if (data.settings) {
+          Object.keys(data.settings).forEach(key => {
+            if ($(key)) $(key).value = data.settings[key];
+          });
+          saveSettings();
+        }
+      } else if (Array.isArray(data)) {
+        // 兼容旧版纯股票数组格式
+        stocks = data;
+        saveStocks();
+      }
+    }
+
+    // 辅助函数：安全兼容 UTF-8 中文字符的 Base64 编解码
+    function utf8_to_b64(str) {
+      return btoa(unescape(encodeURIComponent(str)));
+    }
+    function b64_to_utf8(str) {
+      return decodeURIComponent(escape(atob(str)));
     }
 
     function movingAverage(rows, index, period) {
@@ -1349,6 +1493,7 @@
       return `${c}.US`;
     }
 
+    // 东方财富搜索结果解析
     function normalizeEastmoneyResult(row) {
       const raw = String(row.Code || "").toUpperCase();
       const marketType = String(row.MarketType || "");
@@ -1407,6 +1552,7 @@
       return `<span class="badge ${action.toLowerCase()}">${actionText(action)}</span>`;
     }
 
+    // 交易动作
     function actionText(action) {
       const map = {
         BUY: "建仓",
