@@ -21,14 +21,12 @@
   header h1{font-family:var(--display);font-size:26px;margin:0;letter-spacing:-0.02em;}
   header h1 span{color:var(--amber);}
 
-  /* 云同步按钮 */
   .sync-actions{display:flex;gap:8px;}
   .sync-actions button{background:var(--panel-alt);border:1px solid var(--border);color:var(--amber);font-family:var(--display);font-size:12px;padding:5px 12px;border-radius:4px;cursor:pointer;}
   .sync-actions button:hover{background:var(--amber);color:var(--bg);}
 
   .layout{display:grid;grid-template-columns:360px 1fr;gap:20px;}
   
-  /* 手机端兼容适配 */
   @media (max-width:950px){
     .layout{grid-template-columns:1fr;}
     body{padding:15px;}
@@ -44,18 +42,16 @@
   button#runBtn{font-family:var(--display);font-weight:700;border:none;border-radius:6px;padding:12px;cursor:pointer;width:100%;margin-top:15px;background:var(--amber);color:#1a1300;font-size:15px;}
   button#runBtn:disabled{opacity:0.4;cursor:not-allowed;}
 
-  /* 股票池管理样式 */
   .search-group-bar{background:var(--panel-alt);padding:8px;border-radius:6px;margin-bottom:10px;border:1px solid var(--amber-dim);}
   .batch-actions{display:flex; gap:8px; margin-bottom:10px;}
   .btn-mini{background:var(--panel-alt); border:1px solid var(--border); color:var(--text-dim); font-size:10px; padding:4px 8px; border-radius:4px; cursor:pointer;}
-  .fav-table-container{max-height: 250px; overflow-y: auto; border: 1px solid var(--border); border-radius: 4px; background: #0d1117;}
+  .fav-table-container{max-height: 250px; overflow-y: auto; border:1px solid var(--border); border-radius: 4px; background: #0d1117;}
   .fav-table{width: 100%; border-collapse: collapse; font-size: 11px;}
   .fav-table th, .fav-table td{text-align: left; padding: 8px; border-bottom: 1px solid var(--border); color: var(--text-dim);}
   .fav-table tr.active td{color: var(--amber); background: rgba(240, 180, 41, 0.05);}
   .fav-btn-del{color: var(--red); cursor: pointer; font-size: 14px;}
   .fav-add-bar{display: grid; grid-template-columns: 1fr 1fr auto; gap: 4px; margin-top: 8px;}
 
-  /* 参数折叠 */
   .collapsible-trigger{cursor:pointer;color:var(--amber);font-size:10px;text-transform:none;}
   .collapsible-content{display:none;margin-top:10px;border-top:1px solid var(--border);padding-top:10px;}
   .collapsible-content.show{display:block;}
@@ -63,7 +59,6 @@
   #log{background:#05060a;border:1px solid var(--border);height:150px;overflow-y:auto;font-size:11px;padding:10px;line-height:1.6;border-radius:4px;}
   .t-err{color:var(--red);} .t-ok{color:var(--green);} .t-warn{color:var(--amber);}
 
-  /* 图表表现及交易明细（原样保留） */
   .stats{display:grid;grid-template-columns:repeat(2,1fr);gap:12px;margin-bottom:18px;}
   .stat{background:var(--panel-alt);border:1px solid var(--border);padding:14px;border-radius:7px;}
   .stat .label{font-size:10px;color:var(--text-dim);text-transform:uppercase;margin-bottom:4px;}
@@ -128,7 +123,7 @@
           <label>GitHub Token (需勾选 gist 权限)</label>
           <input type="password" id="ghToken" placeholder="ghp_xxxx">
           <label>Gist ID (URL末尾那串字符)</label>
-          <input type="text" id="ghGistId" placeholder="粘贴你的 Gist ID">
+          <input type="text" id="ghGistId" placeholder="粘贴 Gist URL 末尾的 ID">
           <hr style="border:0; border-top:1px dashed var(--border); margin:12px 0">
           <label>初始总资金 (CNY)</label>
           <input type="number" id="capital" value="1000000">
@@ -189,14 +184,16 @@ function toggleCollapsible(id) { document.getElementById(id).classList.toggle('s
   function log(msg, level='info'){
     const div = document.createElement('div');
     div.className = 't-' + level;
-    div.textContent = `[${new Date().toLocaleTimeString()}] ${msg}`;
+    div.textContent = `[${new Date().toLocaleTimeString('zh-CN', {hour12:false})}] ${msg}`;
     logEl.appendChild(div);
     logEl.scrollTop = logEl.scrollHeight;
     if(level !== 'info') document.getElementById('logBox').classList.add('show');
   }
 
-  // 初始化结束日期为今天
-  document.getElementById('endDate').value = new Date().toISOString().split('T')[0];
+  // 手机端友好日期设置
+  const now = new Date();
+  const dateStr = now.getFullYear() + '-' + String(now.getMonth() + 1).padStart(2, '0') + '-' + String(now.getDate()).padStart(2, '0');
+  document.getElementById('endDate').value = dateStr;
 
   // --- GitHub 云端同步逻辑 ---
   const CloudSync = {
@@ -248,9 +245,9 @@ function toggleCollapsible(id) { document.getElementById(id).classList.toggle('s
         </tr>
       `).join('');
     },
-    batchSelect(status) { const list = this.get(); list.forEach(i => i.selected = status); this.save(list); },
+    batchSelect(s) { const list = this.get(); list.forEach(i => i.selected = s); this.save(list); },
     inverseSelect() { const list = this.get(); list.forEach(i => i.selected = !i.selected); this.save(list); },
-    selectByQuery(q) { if(!q) return; const list = this.get(); list.forEach(i => { if(i.tag.includes(q) || i.name.includes(q)) i.selected = true; }); this.save(list); document.getElementById('groupSearch').value = ''; },
+    selectByQuery(q) { if(!q) return; const list = this.get(); list.forEach(i => { if((i.tag||"").includes(q) || i.name.includes(q)) i.selected = true; }); this.save(list); document.getElementById('groupSearch').value = ''; },
     toggle(idx) { const list = this.get(); list[idx].selected = !list[idx].selected; this.save(list); },
     remove(idx) { const list = this.get(); list.splice(idx,1); this.save(list); },
     updateTag(idx, v) { const list = this.get(); list[idx].tag = v; localStorage.setItem(this.key, JSON.stringify(list)); },
@@ -265,9 +262,10 @@ function toggleCollapsible(id) { document.getElementById(id).classList.toggle('s
   };
   window.FavManager = FavManager;
 
+  // 使用 JSONP 处理股票搜索以解决手机跨域
   async function resolveStockInfo(query) {
     return new Promise((resolve, reject) => {
-      const cb = 'cb_' + Math.random().toString(36).slice(2);
+      const cb = 'search_' + Math.random().toString(36).slice(2);
       const s = document.createElement('script');
       s.src = `https://searchapi.eastmoney.com/api/suggest/get?input=${encodeURIComponent(query)}&type=14&cb=${cb}`;
       window[cb] = (d) => {
@@ -313,24 +311,24 @@ function toggleCollapsible(id) { document.getElementById(id).classList.toggle('s
     }
   };
 
-  // 手机端专用：将 fetch 改为更稳定的 JSONP 数据获取模式以绕过 CORS
+  // 手机端核心优化：使用 JSONP 获取 K 线数据，彻底解决移动端 fetch 跨域拦截问题
   async function fetchKline(code, beg, end){
     return new Promise((resolve, reject) => {
       let pre = /^(60|68|90)/.test(code) ? '1.' : '0.';
       const cb = 'kline_' + Math.random().toString(36).slice(2);
       const s = document.createElement('script');
-      // 东方财富 K 线接口支持 cb 参数进行 JSONP 请求，这对手机端极速且兼容
       s.src = `https://push2his.eastmoney.com/api/qt/stock/kline/get?secid=${pre}${code}&fields1=f1,f2&fields2=f51,f52,f53,f54&klt=101&fqt=1&beg=${beg}&end=${end}&cb=${cb}`;
       window[cb] = (j) => {
-        if(j.data?.klines) {
+        if(j?.data?.klines && j.data.klines.length > 0) {
           resolve({ dates: j.data.klines.map(x=>x.split(',')[0]), closes: j.data.klines.map(x=>parseFloat(x.split(',')[2])) });
         } else {
           reject(new Error("数据为空"));
         }
         delete window[cb]; s.remove();
       };
-      s.onerror = () => reject(new Error("网络请求失败"));
+      s.onerror = () => reject(new Error("API请求失败"));
       document.body.appendChild(s);
+      setTimeout(() => { if(window[cb]) reject(new Error("请求超时")); }, 8000);
     });
   }
 
@@ -360,10 +358,10 @@ function toggleCollapsible(id) { document.getElementById(id).classList.toggle('s
         try { 
           const kdata = await fetchKline(s.code, beg, end);
           stocks.push({ code: s.code, name: s.name, ...kdata }); 
-        } catch(e){ log(`${s.name} 数据获取失败`, "warn"); } 
+        } catch(e){ log(`${s.name} 数据抓取失败或范围内无数据`, "warn"); } 
       }
       
-      if(stocks.length === 0) throw new Error("无可用数据源");
+      if(stocks.length === 0) throw new Error("所选日期范围内无可用行情数据");
 
       const results = stocks.map(ds => {
         const maB = MathUtil.sma(ds.closes, conf.mb), maS = MathUtil.sma(ds.closes, conf.ms);
@@ -399,6 +397,8 @@ function toggleCollapsible(id) { document.getElementById(id).classList.toggle('s
       document.getElementById('resultsArea').style.display = 'block';
       const sRet = (curEq/cap-1)*100, sMDD = MathUtil.maxDD(strategyLine)*100;
       const bRet = (benchmarkLine[benchmarkLine.length-1]/cap-1)*100, bMDD = MathUtil.maxDD(benchmarkLine)*100;
+      
+      // 彻底修正：此处原本误写为 bDD，现统一为 bMDD
       document.getElementById('statsRow').innerHTML = `
         <div class="stat"><div class="label">策略组合表现</div><div class="value ${sRet>=0?'pos':'neg'}">${sRet.toFixed(2)}%</div><div class="sub">回撤: <span class="neg">${sMDD.toFixed(2)}%</span></div></div>
         <div class="stat"><div class="label">基准对照表现</div><div class="value ${bRet>=0?'pos':'neg'}">${bRet.toFixed(2)}%</div><div class="sub">回撤: <span class="neg">${bMDD.toFixed(2)}%</span></div></div>
