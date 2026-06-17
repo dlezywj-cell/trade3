@@ -128,7 +128,7 @@
           <label>GitHub Token (需勾选 gist 权限)</label>
           <input type="password" id="ghToken" placeholder="ghp_xxxx">
           <label>Gist ID (URL末尾那串字符)</label>
-          <input type="text" id="ghGistId" placeholder="粘贴 Gist URL 末尾的 ID">
+          <input type="text" id="ghGistId" placeholder="粘贴你的 Gist ID">
           <hr style="border:0; border-top:1px dashed var(--border); margin:12px 0">
           <label>初始总资金 (CNY)</label>
           <input type="number" id="capital" value="1000000">
@@ -248,7 +248,7 @@ function toggleCollapsible(id) { document.getElementById(id).classList.toggle('s
         </tr>
       `).join('');
     },
-    batchSelect(s) { const list = this.get(); list.forEach(i => i.selected = s); this.save(list); },
+    batchSelect(status) { const list = this.get(); list.forEach(i => i.selected = status); this.save(list); },
     inverseSelect() { const list = this.get(); list.forEach(i => i.selected = !i.selected); this.save(list); },
     selectByQuery(q) { if(!q) return; const list = this.get(); list.forEach(i => { if(i.tag.includes(q) || i.name.includes(q)) i.selected = true; }); this.save(list); document.getElementById('groupSearch').value = ''; },
     toggle(idx) { const list = this.get(); list[idx].selected = !list[idx].selected; this.save(list); },
@@ -313,12 +313,25 @@ function toggleCollapsible(id) { document.getElementById(id).classList.toggle('s
     }
   };
 
+  // 手机端专用：将 fetch 改为更稳定的 JSONP 数据获取模式以绕过 CORS
   async function fetchKline(code, beg, end){
-    let pre = /^(60|68|90)/.test(code) ? '1.' : '0.';
-    const r = await fetch(`https://push2his.eastmoney.com/api/qt/stock/kline/get?secid=${pre}${code}&fields1=f1,f2&fields2=f51,f52,f53,f54&klt=101&fqt=1&beg=${beg}&end=${end}`);
-    const j = await r.json();
-    if(!j.data?.klines) throw new Error(`${code} 数据缺失`);
-    return { dates: j.data.klines.map(x=>x.split(',')[0]), closes: j.data.klines.map(x=>parseFloat(x.split(',')[2])) };
+    return new Promise((resolve, reject) => {
+      let pre = /^(60|68|90)/.test(code) ? '1.' : '0.';
+      const cb = 'kline_' + Math.random().toString(36).slice(2);
+      const s = document.createElement('script');
+      // 东方财富 K 线接口支持 cb 参数进行 JSONP 请求，这对手机端极速且兼容
+      s.src = `https://push2his.eastmoney.com/api/qt/stock/kline/get?secid=${pre}${code}&fields1=f1,f2&fields2=f51,f52,f53,f54&klt=101&fqt=1&beg=${beg}&end=${end}&cb=${cb}`;
+      window[cb] = (j) => {
+        if(j.data?.klines) {
+          resolve({ dates: j.data.klines.map(x=>x.split(',')[0]), closes: j.data.klines.map(x=>parseFloat(x.split(',')[2])) });
+        } else {
+          reject(new Error("数据为空"));
+        }
+        delete window[cb]; s.remove();
+      };
+      s.onerror = () => reject(new Error("网络请求失败"));
+      document.body.appendChild(s);
+    });
   }
 
   let chartEq = null, chartWt = null;
