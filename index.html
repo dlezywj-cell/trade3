@@ -271,9 +271,10 @@ const MathUtil = {
 };
 
 // 多层异步解耦降级抓取 + 自动交叉市场错判校验引擎
-async function fetchHistoryKline(secId) {
+async function fetchHistoryKline(secId, beg, end) {
   const todayStr = new Date().toISOString().split('T')[0]; 
-  const cacheKey = `kline_${secId}`; 
+  // 【修复3】缓存键加入 beg/end，避免不同回测区间互相覆盖污染（之前固定取"最近600条"，任何区间都共用同一份缓存）
+  const cacheKey = `kline_${secId}_${beg}_${end}`; 
   
   let cached = null;
   try {
@@ -283,7 +284,11 @@ async function fetchHistoryKline(secId) {
     }
   } catch(cacheErr) {}
   
-  let baseParams = `fields1=f1&fields2=f51,f53&klt=101&end=20500101&lmt=600`;
+  // 【修复1+3】不再使用固定的 end=20500101&lmt=600（那样永远只能拿到"距今最近600个交易日"，
+  // 如果用户选的区间是更早的历史时段，请求出来的数据自然和区间没有交集）。
+  // 改为直接把用户选择的 beg/end 传给 Eastmoney 接口，lmt 给一个足够大的上限以覆盖任意长跨度。
+  // 同时加入毫秒级时间戳缓存破坏参数 (_ts)，防止浏览器/CDN/运营商代理缓存陈旧响应。
+  let baseParams = `fields1=f1&fields2=f51,f53&klt=101&beg=${beg}&end=${end}&lmt=20000&_ts=${Date.now()}`;
   let url = `https://push2his.eastmoney.com/api/qt/stock/kline/get?secid=${secId}&${baseParams}&fqt=1`;
   
   let data = [];
@@ -351,7 +356,7 @@ async function fetchHistoryKline(secId) {
 async function fetchKline(code, beg, end, retry = 0) {
   const secId = getEmSecId(code);
   try {
-    const klines = await fetchHistoryKline(secId);
+    const klines = await fetchHistoryKline(secId, beg, end);
     
     if (klines && klines.length > 0) {
       const begStr = beg.replace(/(\d{4})(\d{2})(\d{2})/, '$1-$2-$3');
@@ -368,6 +373,11 @@ async function fetchKline(code, beg, end, retry = 0) {
           closes: filtered.map(x => parseFloat(x.split(',')[1]))
         };
       } else {
+        // 【修复2】诊断日志：把实际拉取到的K线日期范围打印出来，而不是只抛一个看不出原因的错误
+        // 下次再失败时，直接看系统日志面板就能确认是"返回了陈旧/不相关的数据"还是"该区间确实无交易"
+        const firstD = klines[0].split(',')[0];
+        const lastD = klines[klines.length - 1].split(',')[0];
+        logGlobal(`诊断: ${code} 实际拉取到 ${klines.length} 条K线，范围 ${firstD} ~ ${lastD}；但请求区间是 ${begStr} ~ ${endStr}，两者无交集`, "warn");
         throw new Error(`日期过滤器扣减后数据为空 (区间内无交易)`);
       }
     } else {
@@ -559,6 +569,14 @@ async function resolveStockInfo(query) {
       if(!selected.length) throw new Error("请先勾选股票");
       const beg = document.getElementById('startDate').value.replace(/-/g,'');
       const end = document.getElementById('endDate').value.replace(/-/g,'');
+      // 【修复4】日期输入兜底校验：日期输入框在部分浏览器/手机端手动输入年份时，
+      // 容易把"2020"误输成"0020"（只填了后两位就跳到下一段），导致请求区间变成一个不存在的远古年份。
+      // 这里直接拦下来，提示用户重新选择，而不是让请求悄悄发出去再报"无交易"这种看不出原因的错误。
+      const begYear = parseInt(beg.slice(0,4)), endYear = parseInt(end.slice(0,4));
+      const nowYear = new Date().getFullYear();
+      if (!beg || !end || begYear < 1990 || begYear > nowYear + 1 || endYear < 1990 || endYear > nowYear + 1) {
+        throw new Error(`日期输入异常 (开始:${document.getElementById('startDate').value} 结束:${document.getElementById('endDate').value})，请重新点选日期`);
+      }
       const cap = parseFloat(document.getElementById('capital').value);
       const conf = {
         mb: parseInt(document.getElementById('maBuy').value),
@@ -629,20 +647,61 @@ async function resolveStockInfo(query) {
         return { ...ds, sigs, trades };
       });
 
-      const dates = results[0].dates;
+      // 【修复5】关键问题：原代码用 results[0].dates 当作所有股票共用的时间轴，按数组下标 i 直接对齐。
+      // 但不同股票的实际交易日并不保证完全一致（停牌、上市时间不同、退市等都会导致某只股票的K线条数/顺序和别的股票不一样）。
+      // 一旦某只股票在某个位置缺一天，后面所有按下标取值就全部错位，closes[i] 会变成 undefined，
+      // undefined 参与运算得到 NaN，而 NaN 一旦进入复利链就会一直传染下去，导致净值曲线在出问题的那天之后直接"消失"
+      // (Chart.js 遇到 NaN 就不画线了)，最终汇总的策略收益也变成 NaN%。
+      // 这里改为按"真实日期"建立统一时间轴 + 逐股票的 日期->收盘价/信号 映射表，缺失数据的交易日做"停牌期间收益记0、信号维持上一次状态"处理。
+      const dateSet = new Set();
+      results.forEach(r => r.dates.forEach(d => dateSet.add(d)));
+      const dates = Array.from(dateSet).sort();
+
+      const lookups = results.map(r => {
+        const m = new Map();
+        r.dates.forEach((d, i) => m.set(d, { close: r.closes[i], sig: r.sigs[i] }));
+        return m;
+      });
+
       let curEq = cap, strategyLine = [], benchmarkLine = [], weights = results.map(()=>[]), prevIdx = [];
+      let lastClose = results.map(() => null);
+      let lastSig = results.map(() => false);
+      let started = results.map(() => false);
+
       for(let i=0; i<dates.length; i++){
-        let curIdx = []; results.forEach((s, idx) => { if(s.sigs[i]) curIdx.push(idx); });
-        if(i > 0 && prevIdx.length > 0) {
-          let dailyRet = 0; prevIdx.forEach(idx => dailyRet += (results[idx].closes[i]/results[idx].closes[i-1])-1);
-          curEq *= (1 + dailyRet / prevIdx.length);
+        const d = dates[i];
+        let dailyRetSum = 0;
+
+        // 先用昨日持仓 (prevIdx) 计算今日组合收益：只对今天有真实成交价的成分计入涨跌，停牌的当天记 0（净值持平）
+        if (i > 0 && prevIdx.length > 0) {
+          prevIdx.forEach(idx => {
+            const rec = lookups[idx].get(d);
+            if (rec && isFinite(rec.close) && lastClose[idx] && isFinite(lastClose[idx]) && lastClose[idx] > 0) {
+              dailyRetSum += (rec.close / lastClose[idx]) - 1;
+            }
+          });
+          curEq *= (1 + dailyRetSum / prevIdx.length);
         }
+
+        // 再用今天的真实数据更新每只股票的状态（收盘价、信号），没有数据的股票维持上一次的状态（视为停牌中）
+        results.forEach((r, idx) => {
+          const rec = lookups[idx].get(d);
+          if (rec) {
+            lastClose[idx] = rec.close;
+            lastSig[idx] = rec.sig;
+            started[idx] = true;
+          }
+        });
+
+        let curIdx = []; results.forEach((r, idx) => { if(started[idx] && lastSig[idx]) curIdx.push(idx); });
         if(JSON.stringify(curIdx) !== JSON.stringify(prevIdx)) curEq *= (1 - conf.comm);
         strategyLine.push(curEq);
         const wPer = curIdx.length ? 100/curIdx.length : 0;
         results.forEach((s,idx) => weights[idx].push(curIdx.includes(idx)?wPer:0));
         prevIdx = curIdx;
-        benchmarkLine.push(results.reduce((sum, s) => sum + ((cap/results.length)/s.closes[0]) * (s.closes[i] || s.closes[0]), 0));
+        // 基准线同样改用日期对齐后的 carry-forward 价格（lastClose），而不是按下标取值；
+        // 尚未"开始"（即该日期之前没有任何真实数据）的股票视为还未建仓，用其首个可用收盘价占位（0%涨跌贡献）
+        benchmarkLine.push(results.reduce((sum, s, idx) => sum + ((cap/results.length)/s.closes[0]) * (started[idx] ? lastClose[idx] : s.closes[0]), 0));
       }
 
       document.getElementById('resultsArea').style.display = 'block';
