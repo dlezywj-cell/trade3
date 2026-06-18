@@ -741,6 +741,21 @@ async function resolveStockInfo(query) {
     } catch(e) { log(e.message, "err"); } finally { btn.disabled = false; }
   };
 
+  // 【修复6】"添加"按钮原来没有绑定任何事件 —— HTML里有按钮、JS里有 FavManager.add() 方法，
+  // 但两者从未被连接起来，所以点击完全没反应。这里补上点击/回车触发，并加个简单的状态反馈。
+  document.getElementById('addFavBtn').onclick = async function(){
+    const codeInput = document.getElementById('newCode');
+    const tagInput = document.getElementById('newTag');
+    const q = codeInput.value.trim();
+    if (!q) { log("请先输入股票代码或名称", "warn"); return; }
+    const btn = this; btn.disabled = true; btn.textContent = '查询中...';
+    await FavManager.add(q, tagInput.value.trim());
+    btn.disabled = false; btn.textContent = '添加';
+    codeInput.value = ''; tagInput.value = '';
+  };
+  document.getElementById('newCode').addEventListener('keypress', e => { if (e.keyCode === 13) document.getElementById('addFavBtn').click(); });
+  document.getElementById('newTag').addEventListener('keypress', e => { if (e.keyCode === 13) document.getElementById('addFavBtn').click(); });
+
   FavManager.render();
 })();
 </script>
