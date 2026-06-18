@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<title>趋势交易回测终端 - 云同步版 (诊断增强)</title>
+<title>趋势交易回测终端 - 云同步版</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
@@ -56,7 +56,7 @@
   .collapsible-content{display:none;margin-top:10px;border-top:1px solid var(--border);padding-top:10px;}
   .collapsible-content.show{display:block;}
 
-  #log{background:#05060a;border:1px solid var(--border);height:150px;overflow-y:auto;font-size:11px;padding:10px;line-height:1.6;border-radius:4px;}
+  #log{background:#05060a;border:1px solid var(--border);height:280px;overflow-y:auto;font-size:11px;padding:10px;line-height:1.6;border-radius:4px;}
   .t-err{color:var(--red);} .t-ok{color:var(--green);} .t-warn{color:var(--amber);}
 
   .stats{display:grid;grid-template-columns:repeat(2,1fr);gap:12px;margin-bottom:18px;}
@@ -72,9 +72,6 @@
   .stockblock{margin-bottom:30px;}
   .stockblock h3{font-family:var(--display);font-size:16px;margin:0 0 10px 0;color:var(--amber);}
   .table-scroll{overflow-x: auto; -webkit-overflow-scrolling: touch;}
-
-  #diagnosticArea { background: #0f1119; border: 1px solid var(--red); padding: 14px; border-radius: 8px; margin-bottom: 16px; font-size: 13px; line-height: 1.7; display: none; }
-  #diagnosticArea h3 { color: var(--red); margin: 0 0 10px 0; font-family: var(--display); }
 </style>
 </head>
 <body>
@@ -113,21 +110,11 @@
       </div>
     </div>
 
-    <!-- 新增：网络诊断面板 -->
-    <div class="panel" style="border-color: var(--red);">
-      <h2 style="color:var(--red)">🔧 网络诊断 <span style="font-size:10px;">先诊断再回测</span></h2>
-      <button id="diagnoseBtn" class="btn-mini" style="background:var(--red);color:#fff;width:100%;padding:10px;font-weight:bold;margin-bottom:12px;">▶ 开始诊断</button>
-      <div id="diagnosticArea"></div>
-      <div style="font-size:10px; color: var(--text-dim); margin-top:10px;">
-        若失败：关闭浏览器扩展 / 用 <b>http://localhost</b> 打开本文件。
-      </div>
-    </div>
-
     <div class="panel">
       <h2>回测配置</h2>
       <div class="row2">
-        <div><label>开始日期</label><input type="date" id="startDate" value="2026-01-01"></div>
-        <div><label>结束日期</label><input type="date" id="endDate" value="2026-06-18"></div>
+        <div><label>开始日期</label><input type="date" id="startDate"></div>
+        <div><label>结束日期</label><input type="date" id="endDate"></div>
       </div>
       
       <div>
@@ -190,7 +177,230 @@
 </div>
 
 <script>
+// 💡 无痕模式终极免密通道：您可以在下方的双引号中直接填入您的密钥和 Gist ID
+// 这样在手机无痕模式下打开，不需要手动输入，系统也会自动完成读取与同步。
+const EMBEDDED_TOKEN = ""; 
+const EMBEDDED_GIST_ID = ""; 
+
 function toggleCollapsible(id) { document.getElementById(id).classList.toggle('show'); }
+
+// 全局日志管道
+let logGlobal = function() {};
+
+// ===== 全局作用域：完整对齐工作版底层数据拉取和数学辅助引擎 =====
+
+const DB_NAME = 'StockHistoryDB_TrendV6'; 
+const STORE_NAME = 'klines_store_trend_v6';
+const dbPromise = new Promise((resolve, reject) => {
+  try {
+    const request = indexedDB.open(DB_NAME, 1);
+    request.onupgradeneeded = e => { const db = e.target.result; if (!db.objectStoreNames.contains(STORE_NAME)) db.createObjectStore(STORE_NAME); };
+    request.onsuccess = e => resolve(e.target.result);
+    request.onerror = e => reject(e);
+  } catch(e) { reject(e); }
+});
+
+async function getCache(key) {
+  try {
+    const db = await dbPromise; 
+    return new Promise(r => { 
+      const tx = db.transaction(STORE_NAME, 'readonly'); 
+      const req = tx.objectStore(STORE_NAME).get(key); 
+      req.onsuccess = () => r(req.result); 
+      req.onerror = () => r(null); 
+    });
+  } catch(e) { return null; }
+}
+async function setCache(key, val) {
+  try {
+    const db = await dbPromise; 
+    const tx = db.transaction(STORE_NAME, 'readwrite'); 
+    tx.objectStore(STORE_NAME).put(val, key); 
+  } catch(e) {}
+}
+
+function jsonpRequest(url, callbackParamName = 'cb') {
+  return new Promise((resolve, reject) => {
+    const callbackName = 'jsonp_cb_' + Math.random().toString(36).substr(2, 9);
+    const script = document.createElement('script');
+    const hasQuery = url.includes('?');
+    script.src = `${url}${hasQuery ? '&' : '?'}${callbackParamName}=${callbackName}`;
+    script.onerror = () => { delete window[callbackName]; document.body.removeChild(script); reject(new Error("JSONP 载入失败")); };
+    window[callbackName] = (data) => { delete window[callbackName]; document.body.removeChild(script); resolve(data); };
+    document.body.appendChild(script);
+  });
+}
+
+const getEmSecId = c => { 
+  if (!c) return "0.000000";
+  c = c.toString().trim().toUpperCase(); 
+  let raw = c.replace(/\.[A-Z]+$/, '');
+  if (/^\d{5}$/.test(raw)) return '116.' + raw.padStart(5, '0');
+  if (c.includes('.US')) return '105.' + raw;
+  if (raw.startsWith('6')) return '1.' + raw;
+  return '0.' + raw; 
+};
+
+// 全局计算引擎
+const MathUtil = {
+  sma(v, n) {
+    let r = new Array(v.length).fill(null), sum = 0;
+    for (let i = 0; i < v.length; i++) {
+      sum += v[i]; if (i >= n) sum -= v[i - n];
+      if (i >= n - 1) r[i] = sum / n;
+    }
+    return r;
+  },
+  rollingMin(v, n) {
+    let r = new Array(v.length).fill(null);
+    for (let i = 0; i < v.length; i++) {
+      let start = (n === 0) ? 0 : Math.max(0, i - n + 1);
+      let m = v[i];
+      for (let j = start; j < i; j++) if(v[j] < m) m = v[j];
+      r[i] = m;
+    }
+    return r;
+  },
+  maxDD(eq) {
+    let peak = -Infinity, mdd = 0;
+    for (const v of eq) { if (v > peak) peak = v; let dd = (v / peak) - 1; if (dd < mdd) mdd = dd; }
+    return mdd;
+  }
+};
+
+// 多层异步解耦降级抓取 + 自动交叉市场错判校验引擎
+async function fetchHistoryKline(secId) {
+  const todayStr = new Date().toISOString().split('T')[0]; 
+  const cacheKey = `kline_${secId}`; 
+  
+  let cached = null;
+  try {
+    cached = await getCache(cacheKey);
+    if (cached && cached.date === todayStr) {
+      return cached.data;
+    }
+  } catch(cacheErr) {}
+  
+  let baseParams = `fields1=f1&fields2=f51,f53&klt=101&end=20500101&lmt=600`;
+  let url = `https://push2his.eastmoney.com/api/qt/stock/kline/get?secid=${secId}&${baseParams}&fqt=1`;
+  
+  let data = [];
+  
+  // 1. 独立解耦拉取前复权数据 (fqt=1)
+  try {
+    let json = await jsonpRequest(url);
+    data = json?.data?.klines || [];
+  } catch(fqt1Err) {}
+  
+  // 2. 如果前复权报错或行数为 0，独立拉取不复权数据 (fqt=0) 容错
+  if (data.length === 0) {
+    try {
+      let url2 = `https://push2his.eastmoney.com/api/qt/stock/kline/get?secid=${secId}&${baseParams}&fqt=0`;
+      let json2 = await jsonpRequest(url2);
+      data = json2?.data?.klines || [];
+    } catch(fqt0Err) {}
+  }
+
+  // 3. 跨市场分类纠偏重试
+  if (data.length === 0) {
+    let altSecId = secId.startsWith('0.') ? secId.replace('0.', '1.') : secId.startsWith('1.') ? secId.replace('1.', '0.') : null;
+    if (altSecId) {
+      let altUrl = `https://push2his.eastmoney.com/api/qt/stock/kline/get?secid=${altSecId}&${baseParams}&fqt=1`;
+      try {
+        let altJson = await jsonpRequest(altUrl);
+        data = altJson?.data?.klines || [];
+        if (data.length === 0) {
+          let altUrl0 = altUrl.replace('fqt=1', 'fqt=0');
+          let altJson0 = await jsonpRequest(altUrl0);
+          data = altJson0?.data?.klines || [];
+        }
+      } catch(altErr) {}
+    }
+  }
+
+  // 4. 兼容美股多板块代号
+  if (data.length === 0 && secId.startsWith('105.')) { 
+    try {
+      let altUrl = url.replace('105.', '106.'); 
+      let j3 = await jsonpRequest(altUrl); 
+      data = j3?.data?.klines || []; 
+      if(data.length === 0) {
+        let altUrl2 = url.replace('105.', '107.'); 
+        let j4 = await jsonpRequest(altUrl2); 
+        data = j4?.data?.klines || []; 
+      }
+    } catch(usErr) {}
+  }
+
+  if (data.length > 0) {
+    try {
+      await setCache(cacheKey, { date: todayStr, data: data });
+    } catch(cacheErr) {}
+    return data;
+  }
+  
+  return cached ? cached.data : [];
+}
+
+async function fetchKline(code, beg, end, retry = 0) {
+  const secId = getEmSecId(code);
+  try {
+    const klines = await fetchHistoryKline(secId);
+    
+    if (klines && klines.length > 0) {
+      const begStr = beg.replace(/(\d{4})(\d{2})(\d{2})/, '$1-$2-$3');
+      const endStr = end.replace(/(\d{4})(\d{2})(\d{2})/, '$1-$2-$3');
+      
+      let filtered = klines.filter(k => {
+        const d = k.split(',')[0];
+        return d >= begStr && d <= endStr;
+      });
+      
+      if (filtered.length > 0) {
+        return {
+          dates: filtered.map(x => x.split(',')[0]),
+          closes: filtered.map(x => parseFloat(x.split(',')[1]))
+        };
+      } else {
+        throw new Error(`日期过滤器扣减后数据为空 (区间内无交易)`);
+      }
+    } else {
+      throw new Error("无有效行情数据 (拉取数据行为空)");
+    }
+  } catch (err) {
+    if (retry < 2) { 
+      logGlobal(`正在尝试重新连接 ${code} (重试间隔 1.0 秒)...`, "warn");
+      await new Promise(r => setTimeout(r, 1000)); 
+      return fetchKline(code, beg, end, retry + 1);
+    }
+    throw err;
+  }
+}
+
+async function resolveStockInfo(query) {
+  const searchUrl = `https://searchapi.eastmoney.com/api/suggest/get?input=${encodeURIComponent(query)}&type=14&token=D43BF722C8E33BD5D50F639205545E43`;
+  try {
+    const json = await jsonpRequest(searchUrl);
+    if (json?.QuotationCodeTable?.Data?.[0]) {
+      const r = json.QuotationCodeTable.Data[0];
+      let suffix = "";
+      if (/^\d{5}$/.test(r.Code)) suffix = r.Code.startsWith('6') ? ".SH" : ".SZ"; 
+      else if (!/^\d+$/.test(r.Code)) suffix = ".US"; 
+      else { 
+        if(r.MarketType == "1") suffix = ".SH"; 
+        else if(r.MarketType == "2") suffix = ".SZ"; 
+        else if(r.MarketType == "5") suffix = ".HK"; 
+      }
+      return { code: r.Code + suffix, name: r.Name };
+    } else {
+      throw new Error("无数据");
+    }
+  } catch(e) {
+    throw e;
+  }
+}
+
+// ===== 全局作用域调试诊断接口声明结束 =====
 
 (function(){
   const logEl = document.getElementById('log');
@@ -202,13 +412,19 @@ function toggleCollapsible(id) { document.getElementById(id).classList.toggle('s
     logEl.scrollTop = logEl.scrollHeight;
     if(level !== 'info') document.getElementById('logBox').classList.add('show');
   }
+  
+  // 注入全局日志通道引用
+  logGlobal = log;
 
-  // --- 配置持久化 ---
+  // --- 配置持久化 (Token & GistID) ---
   const ConfigManager = {
     keys: { token: 'BT_GH_TOKEN', gistId: 'BT_GH_GIST_ID' },
     load() {
-      document.getElementById('ghToken').value = localStorage.getItem(this.keys.token) || '';
-      document.getElementById('ghGistId').value = localStorage.getItem(this.keys.gistId) || '';
+      // 优先读取本地缓存，如果处于无痕模式被清除，则自动读取头部硬编码定义的 EMBEDDED_TOKEN 与 EMBEDDED_GIST_ID
+      const token = localStorage.getItem(this.keys.token) || EMBEDDED_TOKEN;
+      const gistId = localStorage.getItem(this.keys.gistId) || EMBEDDED_GIST_ID;
+      document.getElementById('ghToken').value = token;
+      document.getElementById('ghGistId').value = gistId;
     },
     init() {
       document.getElementById('ghToken').addEventListener('input', (e) => localStorage.setItem(this.keys.token, e.target.value));
@@ -218,100 +434,17 @@ function toggleCollapsible(id) { document.getElementById(id).classList.toggle('s
 
   ConfigManager.load();
   ConfigManager.init();
+  
+  // 按照您的要求：固定开始日期为 2026-01-01，结束日期动态对齐今天
   const today = new Date();
-  document.getElementById('endDate').value = today.getFullYear() + '-' + String(today.getMonth() + 1).padStart(2, '0') + '-' + String(today.getDate()).padStart(2, '0');
+  const endStr = today.toISOString().split('T')[0];
+  
+  document.getElementById('endDate').value = endStr;
+  document.getElementById('startDate').value = "2026-01-01";
 
   const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
-  // --- 网络诊断核心 ---
-  const Diagnostics = {
-    run() {
-      const area = document.getElementById('diagnosticArea');
-      area.style.display = 'block';
-      area.innerHTML = '<span style="color:#e7eaf0;">检测中...</span>';
-      const results = [];
-
-      // 1. 协议检测
-      if (location.protocol === 'file:') {
-        results.push('<span style="color:var(--red)">● 当前使用 file:// 协议，浏览器可能会拦截 JSONP 请求。</span>');
-        results.push('<span style="color:var(--amber)">→ 请通过 http://localhost 打开本文件 (用 Live Server 或 npx http-server)。</span>');
-      } else {
-        results.push('<span style="color:var(--green)">● 协议正常 (http/https)</span>');
-      }
-
-      // 2. 在线状态
-      if (!navigator.onLine) {
-        results.push('<span style="color:var(--red)">● 浏览器处于离线状态，请检查网络。</span>');
-      } else {
-        results.push('<span style="color:var(--green)">● 网络连接正常</span>');
-      }
-
-      // 3. 尝试用 fetch 访问东方财富 (看网络是否可达)
-      fetch('https://push2his.eastmoney.com/api/qt/stock/kline/get?secid=1.600519&klt=101&fields1=f1&fields2=f51&beg=20260101&end=20260618')
-        .then(res => {
-          if (res.ok) {
-            results.push('<span style="color:var(--green)">● fetch 方式直接访问东方财富 API 成功 (网络可达)</span>');
-          } else {
-            results.push(`<span style="color:var(--red)">● fetch 请求返回状态 ${res.status}，可能被拦截</span>`);
-          }
-          this.tryJsonp(results, area);
-        })
-        .catch(err => {
-          results.push(`<span style="color:var(--red)">● fetch 请求失败: ${err.message}</span>`);
-          results.push('<span style="color:var(--amber)">→ 这通常由浏览器扩展、防火墙或 CSP 头引起。</span>');
-          this.tryJsonp(results, area);
-        });
-    },
-
-    tryJsonp(results, area) {
-      // 4. 尝试 JSONP (模拟真实请求)
-      results.push('<br><span style="color:#fff;">⚡ 正在测试 JSONP 方式 (与回测一致)...</span>');
-      area.innerHTML = results.join('<br>');
-      
-      const testCode = '600519';
-      const cb = 'diag_' + Math.random().toString(36).slice(2);
-      const s = document.createElement('script');
-      s.src = `https://push2his.eastmoney.com/api/qt/stock/kline/get?secid=1.${testCode}&fields1=f1&fields2=f51&klt=101&fqt=1&beg=20260101&end=20260618&cb=${cb}&_=${Date.now()}`;
-      
-      const timeout = setTimeout(() => {
-        results.push('<span style="color:var(--red)">● JSONP 请求超时 (15秒)，网络可能被完全阻断。</span>');
-        area.innerHTML = results.join('<br>');
-        delete window[cb];
-        s.remove();
-      }, 15000);
-
-      window[cb] = (data) => {
-        clearTimeout(timeout);
-        if (data && data.data && data.data.klines) {
-          results.push('<span style="color:var(--green)">● JSONP 方式调用成功！数据正常返回。</span>');
-          results.push('<span style="color:var(--green)">✅ 结论：网络与 API 均无问题，若回测仍失败，请检查股票代码或日期范围。</span>');
-        } else {
-          results.push('<span style="color:var(--red)">● JSONP 返回了空数据 (可能股票停牌或日期内无数据)</span>');
-        }
-        area.innerHTML = results.join('<br>');
-        delete window[cb];
-        s.remove();
-      };
-
-      s.onerror = () => {
-        clearTimeout(timeout);
-        results.push('<span style="color:var(--red)">● JSONP 脚本加载失败 (onerror 触发)</span>');
-        results.push('<span style="color:var(--amber)">→ 大概率是浏览器扩展 (uBlock/AdGuard) 或 CSP 拦截了脚本请求。</span>');
-        results.push('<span style="color:var(--amber)">→ 请尝试：1. 禁用所有扩展；2. 用无痕模式打开。</span>');
-        area.innerHTML = results.join('<br>');
-        delete window[cb];
-        s.remove();
-      };
-
-      document.body.appendChild(s);
-    }
-  };
-
-  document.getElementById('diagnoseBtn').addEventListener('click', () => {
-    Diagnostics.run();
-  });
-
-  // --- 云端同步 (不变) ---
+  // --- GitHub 云端同步逻辑 ---
   const CloudSync = {
     async save() {
       const token = document.getElementById('ghToken').value;
@@ -326,7 +459,7 @@ function toggleCollapsible(id) { document.getElementById(id).classList.toggle('s
           body: JSON.stringify({ files: { "stock_pool_v3.json": { content: JSON.stringify(data) } } })
         });
         if(res.ok) log("数据已成功同步至 GitHub", "ok"); else throw "fail";
-      } catch(e) { log("同步失败，请检查配置和网络", "err"); }
+      } catch(e) { log("同步失败，请检查配置 and 网络", "err"); }
     },
     async fetch() {
       const token = document.getElementById('ghToken').value;
@@ -346,7 +479,7 @@ function toggleCollapsible(id) { document.getElementById(id).classList.toggle('s
 
   const FavManager = {
     key: 'BT_FAV_PRO_V3',
-    default: [{code:'600519', name:'贵州茅台', tag:'白酒', selected:true},{code:'300750', name:'宁德时代', tag:'新能源', selected:true}],
+    default: [{code:'600519.SH', name:'贵州茅台', tag:'白酒', selected:true},{code:'300750.SZ', name:'宁德时代', tag:'新能源', selected:true}],
     get() { const d = localStorage.getItem(this.key); return d ? JSON.parse(d) : this.default; },
     save(list) { localStorage.setItem(this.key, JSON.stringify(list)); this.render(); },
     render() {
@@ -377,82 +510,6 @@ function toggleCollapsible(id) { document.getElementById(id).classList.toggle('s
   };
   window.FavManager = FavManager;
 
-  async function resolveStockInfo(query) {
-    return new Promise((resolve, reject) => {
-      const cb = 'search_' + Math.random().toString(36).slice(2);
-      const s = document.createElement('script');
-      s.src = `https://searchapi.eastmoney.com/api/suggest/get?input=${encodeURIComponent(query)}&type=14&cb=${cb}`;
-      window[cb] = (d) => {
-        if(d?.QuotationCodeTable?.Data?.length > 0) {
-          const r = d.QuotationCodeTable.Data[0];
-          resolve({ code: r.Code, name: r.Name });
-        } else reject();
-        delete window[cb]; s.remove();
-      };
-      document.body.appendChild(s);
-    });
-  }
-
-  document.getElementById('addFavBtn').onclick = () => {
-    FavManager.add(document.getElementById('newCode').value, document.getElementById('newTag').value);
-    document.getElementById('newCode').value = ''; document.getElementById('newTag').value = '';
-  };
-
-  const MathUtil = {
-    sma(v, n) {
-      let r = new Array(v.length).fill(null), sum = 0;
-      for (let i = 0; i < v.length; i++) {
-        sum += v[i]; if (i >= n) sum -= v[i - n];
-        if (i >= n - 1) r[i] = sum / n;
-      }
-      return r;
-    },
-    rollingMin(v, n) {
-      let r = new Array(v.length).fill(null);
-      for (let i = 0; i < v.length; i++) {
-        let start = (n === 0) ? 0 : Math.max(0, i - n + 1);
-        let m = v[i];
-        for (let j = start; j < i; j++) if(v[j] < m) m = v[j];
-        r[i] = m;
-      }
-      return r;
-    },
-    maxDD(eq) {
-      let peak = -Infinity, mdd = 0;
-      for (const v of eq) { if (v > peak) peak = v; let dd = (v / peak) - 1; if (dd < mdd) mdd = dd; }
-      return mdd;
-    }
-  };
-
-  // 改进后的 fetchKline，错误信息更详细
-  async function fetchKline(code, beg, end, retry = 0) {
-    return new Promise((resolve, reject) => {
-      let pre = /^(60|68|90)/.test(code) ? '1.' : '0.';
-      const cb = 'kline_' + Math.random().toString(36).slice(2);
-      const s = document.createElement('script');
-      s.src = `https://push2his.eastmoney.com/api/qt/stock/kline/get?secid=${pre}${code}&fields1=f1,f2,f3,f4,f5,f6&fields2=f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61&klt=101&fqt=1&beg=${beg}&end=${end}&cb=${cb}&_=${Date.now()}`;
-      const timeout = setTimeout(() => { cleanup(); reject(new Error("请求超时(15s)，网络缓慢或阻塞")); }, 15000);
-      const cleanup = () => { clearTimeout(timeout); delete window[cb]; s.remove(); };
-      window[cb] = (j) => {
-        cleanup();
-        if(j?.data?.klines && j.data.klines.length > 0) {
-          resolve({ dates: j.data.klines.map(x=>x.split(',')[0]), closes: j.data.klines.map(x=>parseFloat(x.split(',')[2])) });
-        } else reject(new Error("API返回无数据，可能日期内无交易或股票代码错误"));
-      };
-      s.onerror = () => { 
-        cleanup(); 
-        reject(new Error("网络拦截：JSONP脚本加载失败，请检查浏览器扩展/防火墙/CSP策略")); 
-      };
-      document.body.appendChild(s);
-    }).catch(async (err) => {
-      if (retry < 2) { 
-        log(`正在尝试重新连接 ${code}...`, "warn");
-        await sleep(800); return fetchKline(code, beg, end, retry + 1);
-      }
-      throw err;
-    });
-  }
-
   let chartEq = null, chartWt = null;
   const COLORS = ['#2bb673', '#e5484d', '#4299e1', '#9f7aea', '#ed64a6', '#ecc94b', '#4fd1c5'];
 
@@ -474,15 +531,19 @@ function toggleCollapsible(id) { document.getElementById(id).classList.toggle('s
         comm: parseFloat(document.getElementById('commission').value)/100
       };
 
+      // ===== 【严格串行错峰拉取机制】：彻底对齐工作版提取行为，保证网络绝不撞墙 =====
       const stocks = [];
       for(const s of selected) { 
         try { 
           log(`正在同步行情: ${s.name}...`);
           const kdata = await fetchKline(s.code, beg, end);
           stocks.push({ code: s.code, name: s.name, ...kdata }); 
-          await sleep(150);
+          
+          // 抚平请求尖峰：每支股票拉取完成后强制安全静默 350 毫秒，100% 模拟正常用户点击行为
+          await sleep(350); 
         } catch(e){ log(`${s.name} 数据抓取失败 (${e.message})`, "warn"); } 
       }
+      // ===== 调度重构结束 =====
       
       if(stocks.length === 0) throw new Error("无可用的历史行情数据");
 
