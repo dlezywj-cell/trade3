@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<title>趋势交易回测终端 - 云同步版</title>
+<title>趋势交易回测终端 - 云同步版 (诊断增强)</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
@@ -72,6 +72,9 @@
   .stockblock{margin-bottom:30px;}
   .stockblock h3{font-family:var(--display);font-size:16px;margin:0 0 10px 0;color:var(--amber);}
   .table-scroll{overflow-x: auto; -webkit-overflow-scrolling: touch;}
+
+  #diagnosticArea { background: #0f1119; border: 1px solid var(--red); padding: 14px; border-radius: 8px; margin-bottom: 16px; font-size: 13px; line-height: 1.7; display: none; }
+  #diagnosticArea h3 { color: var(--red); margin: 0 0 10px 0; font-family: var(--display); }
 </style>
 </head>
 <body>
@@ -107,6 +110,16 @@
         <input type="text" id="newCode" placeholder="代码/名称">
         <input type="text" id="newTag" placeholder="标签">
         <button id="addFavBtn" class="btn-mini" style="background:var(--amber);color:#000;border:none">添加</button>
+      </div>
+    </div>
+
+    <!-- 新增：网络诊断面板 -->
+    <div class="panel" style="border-color: var(--red);">
+      <h2 style="color:var(--red)">🔧 网络诊断 <span style="font-size:10px;">先诊断再回测</span></h2>
+      <button id="diagnoseBtn" class="btn-mini" style="background:var(--red);color:#fff;width:100%;padding:10px;font-weight:bold;margin-bottom:12px;">▶ 开始诊断</button>
+      <div id="diagnosticArea"></div>
+      <div style="font-size:10px; color: var(--text-dim); margin-top:10px;">
+        若失败：关闭浏览器扩展 / 用 <b>http://localhost</b> 打开本文件。
       </div>
     </div>
 
@@ -190,7 +203,7 @@ function toggleCollapsible(id) { document.getElementById(id).classList.toggle('s
     if(level !== 'info') document.getElementById('logBox').classList.add('show');
   }
 
-  // --- 配置持久化 (Token & GistID) ---
+  // --- 配置持久化 ---
   const ConfigManager = {
     keys: { token: 'BT_GH_TOKEN', gistId: 'BT_GH_GIST_ID' },
     load() {
@@ -203,7 +216,6 @@ function toggleCollapsible(id) { document.getElementById(id).classList.toggle('s
     }
   };
 
-  // 初始化设置
   ConfigManager.load();
   ConfigManager.init();
   const today = new Date();
@@ -211,7 +223,95 @@ function toggleCollapsible(id) { document.getElementById(id).classList.toggle('s
 
   const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
-  // --- GitHub 云端同步逻辑 ---
+  // --- 网络诊断核心 ---
+  const Diagnostics = {
+    run() {
+      const area = document.getElementById('diagnosticArea');
+      area.style.display = 'block';
+      area.innerHTML = '<span style="color:#e7eaf0;">检测中...</span>';
+      const results = [];
+
+      // 1. 协议检测
+      if (location.protocol === 'file:') {
+        results.push('<span style="color:var(--red)">● 当前使用 file:// 协议，浏览器可能会拦截 JSONP 请求。</span>');
+        results.push('<span style="color:var(--amber)">→ 请通过 http://localhost 打开本文件 (用 Live Server 或 npx http-server)。</span>');
+      } else {
+        results.push('<span style="color:var(--green)">● 协议正常 (http/https)</span>');
+      }
+
+      // 2. 在线状态
+      if (!navigator.onLine) {
+        results.push('<span style="color:var(--red)">● 浏览器处于离线状态，请检查网络。</span>');
+      } else {
+        results.push('<span style="color:var(--green)">● 网络连接正常</span>');
+      }
+
+      // 3. 尝试用 fetch 访问东方财富 (看网络是否可达)
+      fetch('https://push2his.eastmoney.com/api/qt/stock/kline/get?secid=1.600519&klt=101&fields1=f1&fields2=f51&beg=20260101&end=20260618')
+        .then(res => {
+          if (res.ok) {
+            results.push('<span style="color:var(--green)">● fetch 方式直接访问东方财富 API 成功 (网络可达)</span>');
+          } else {
+            results.push(`<span style="color:var(--red)">● fetch 请求返回状态 ${res.status}，可能被拦截</span>`);
+          }
+          this.tryJsonp(results, area);
+        })
+        .catch(err => {
+          results.push(`<span style="color:var(--red)">● fetch 请求失败: ${err.message}</span>`);
+          results.push('<span style="color:var(--amber)">→ 这通常由浏览器扩展、防火墙或 CSP 头引起。</span>');
+          this.tryJsonp(results, area);
+        });
+    },
+
+    tryJsonp(results, area) {
+      // 4. 尝试 JSONP (模拟真实请求)
+      results.push('<br><span style="color:#fff;">⚡ 正在测试 JSONP 方式 (与回测一致)...</span>');
+      area.innerHTML = results.join('<br>');
+      
+      const testCode = '600519';
+      const cb = 'diag_' + Math.random().toString(36).slice(2);
+      const s = document.createElement('script');
+      s.src = `https://push2his.eastmoney.com/api/qt/stock/kline/get?secid=1.${testCode}&fields1=f1&fields2=f51&klt=101&fqt=1&beg=20260101&end=20260618&cb=${cb}&_=${Date.now()}`;
+      
+      const timeout = setTimeout(() => {
+        results.push('<span style="color:var(--red)">● JSONP 请求超时 (15秒)，网络可能被完全阻断。</span>');
+        area.innerHTML = results.join('<br>');
+        delete window[cb];
+        s.remove();
+      }, 15000);
+
+      window[cb] = (data) => {
+        clearTimeout(timeout);
+        if (data && data.data && data.data.klines) {
+          results.push('<span style="color:var(--green)">● JSONP 方式调用成功！数据正常返回。</span>');
+          results.push('<span style="color:var(--green)">✅ 结论：网络与 API 均无问题，若回测仍失败，请检查股票代码或日期范围。</span>');
+        } else {
+          results.push('<span style="color:var(--red)">● JSONP 返回了空数据 (可能股票停牌或日期内无数据)</span>');
+        }
+        area.innerHTML = results.join('<br>');
+        delete window[cb];
+        s.remove();
+      };
+
+      s.onerror = () => {
+        clearTimeout(timeout);
+        results.push('<span style="color:var(--red)">● JSONP 脚本加载失败 (onerror 触发)</span>');
+        results.push('<span style="color:var(--amber)">→ 大概率是浏览器扩展 (uBlock/AdGuard) 或 CSP 拦截了脚本请求。</span>');
+        results.push('<span style="color:var(--amber)">→ 请尝试：1. 禁用所有扩展；2. 用无痕模式打开。</span>');
+        area.innerHTML = results.join('<br>');
+        delete window[cb];
+        s.remove();
+      };
+
+      document.body.appendChild(s);
+    }
+  };
+
+  document.getElementById('diagnoseBtn').addEventListener('click', () => {
+    Diagnostics.run();
+  });
+
+  // --- 云端同步 (不变) ---
   const CloudSync = {
     async save() {
       const token = document.getElementById('ghToken').value;
@@ -324,26 +424,30 @@ function toggleCollapsible(id) { document.getElementById(id).classList.toggle('s
     }
   };
 
+  // 改进后的 fetchKline，错误信息更详细
   async function fetchKline(code, beg, end, retry = 0) {
     return new Promise((resolve, reject) => {
       let pre = /^(60|68|90)/.test(code) ? '1.' : '0.';
       const cb = 'kline_' + Math.random().toString(36).slice(2);
       const s = document.createElement('script');
       s.src = `https://push2his.eastmoney.com/api/qt/stock/kline/get?secid=${pre}${code}&fields1=f1,f2,f3,f4,f5,f6&fields2=f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61&klt=101&fqt=1&beg=${beg}&end=${end}&cb=${cb}&_=${Date.now()}`;
-      const timeout = setTimeout(() => { cleanup(); reject(new Error("请求超时")); }, 15000);
+      const timeout = setTimeout(() => { cleanup(); reject(new Error("请求超时(15s)，网络缓慢或阻塞")); }, 15000);
       const cleanup = () => { clearTimeout(timeout); delete window[cb]; s.remove(); };
       window[cb] = (j) => {
         cleanup();
         if(j?.data?.klines && j.data.klines.length > 0) {
           resolve({ dates: j.data.klines.map(x=>x.split(',')[0]), closes: j.data.klines.map(x=>parseFloat(x.split(',')[2])) });
-        } else reject(new Error("无数据"));
+        } else reject(new Error("API返回无数据，可能日期内无交易或股票代码错误"));
       };
-      s.onerror = () => { cleanup(); reject(new Error("网络拦截")); };
+      s.onerror = () => { 
+        cleanup(); 
+        reject(new Error("网络拦截：JSONP脚本加载失败，请检查浏览器扩展/防火墙/CSP策略")); 
+      };
       document.body.appendChild(s);
     }).catch(async (err) => {
       if (retry < 2) { 
         log(`正在尝试重新连接 ${code}...`, "warn");
-        await sleep(500); return fetchKline(code, beg, end, retry + 1);
+        await sleep(800); return fetchKline(code, beg, end, retry + 1);
       }
       throw err;
     });
