@@ -372,7 +372,6 @@ async function fetchHistoryKline(secId, beg, end) {
   }
 
   // 5. 【新增】数据源切换：东方财富的所有变体都拿不到数据时，换一个完全独立的数据源（腾讯财经 gtimg.cn）再试一次。
-  // 两家公司、两套基础设施，东方财富那边被限流/临时封锁时，大概率不会同时影响腾讯这边，避免"全军覆没"。
   if (data.length === 0) {
     const tcCode = secIdToTcCode(secId);
     if (tcCode) {
@@ -382,37 +381,22 @@ async function fetchHistoryKline(secId, beg, end) {
         const begISO = beg.replace(/(\d{4})(\d{2})(\d{2})/, '$1-$2-$3');
         const endISO = end.replace(/(\d{4})(\d{2})(\d{2})/, '$1-$2-$3');
         const varName = 'tc_kdata_' + Math.random().toString(36).substr(2, 9);
-        // 【修复9】之前这里的"获取多少条"写的是 8000——查了好几个独立参考资料/开源脚本，腾讯日K线接口的这个参数
-        // 实际使用的全部是 640，8000 大概率超出了服务端允许的上限，被直接判定为非法参数（对应日志里的 "param error"）。
-        // 改成 640 后，腾讯只能稳定补全"距今约640个交易日"（约2.5年）以内的区间；超过这个跨度的部分用腾讯兜底时会缺失，
-        // 但它本来就只是东方财富彻底失败时的最后一道保险，能补到多少算多少，比完全没有数据强。
         const tcUrl = `https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?_var=${varName}&param=${tcCode},day,${begISO},${endISO},640,qfq&_ts=${Date.now()}`;
         const tcJson = await jsonpVarRequest(tcUrl, varName);
         const stockData = tcJson?.data?.[tcCode];
-        // 腾讯前复权数据通常存在 qfqday 字段下，指数等没有复权概念的品种会落在 day 字段下
         const rawList = stockData ? (stockData.qfqday || stockData.day || []) : [];
-        // 腾讯单条格式: [日期, 开盘, 收盘, 最高, 最低, 成交量]；转换成跟东方财富一致的 "日期,收盘价" 字符串，
-        // 这样后面 fetchKline 里统一的日期过滤/解析逻辑完全不用改，两个数据源共用一套下游代码。
         data = rawList.filter(row => row && row[0] && row[2]).map(row => `${row[0]},${row[2]}`);
         if (data.length > 0) {
           logGlobal(`腾讯财经返回成功，已补全该股票的行情`, "ok");
-          // 【修复10】之前不管区间长短，只要"返回的第一天"晚于"请求的开始日"就提示截断——
-          // 但区间开头如果恰好是周末/法定假日（比如元旦），第一个交易日本来就会比1月1日晚几天，这是正常现象，不是被640条上限截断。
-          // 改成只在"请求跨度本身长到640个交易日真的可能装不下"（约2.5年以上）时才做这个判断，短区间不会再被误报。
           const spanCalendarDays = (new Date(endISO) - new Date(begISO)) / 86400000;
           const firstReturnedDate = data[0].split(',')[0];
           if (spanCalendarDays > 950 && firstReturnedDate > begISO) {
             logGlobal(`提示: 腾讯财经单次最多取640个交易日，实际只覆盖到 ${firstReturnedDate} ~ ${endISO}，比请求的 ${begISO} 起始日要晚`, "warn");
           }
         } else {
-          // 【诊断】请求没有报错(没进catch)，但是解析不出有效K线——把腾讯原始返回结构打出来，确认是格式变了还是真的没数据
           logGlobal(`腾讯财经请求成功但解析为空，原始返回结构: ${JSON.stringify(tcJson).slice(0, 300)}`, "err");
         }
       } catch(tcErr) {
-        // 【诊断】之前这里是空的 catch，完全看不出失败原因。现在把具体异常信息打出来：
-        // 如果是 "JSONP(var) 载入失败"，说明请求本身被拦截/网络不通（域名被拦截、断网等）；
-        // 如果是 "JSONP(var) 未获取到数据"，说明脚本是加载成功的，但响应内容执行后没能正确设置全局变量
-        // （常见原因：腾讯实际返回的不是 var 包装的JS，而是纯JSON，作为脚本执行直接报语法错误，变量根本没赋上值）。
         logGlobal(`腾讯财经备用源也失败: ${tcErr.message}`, "err");
       }
     }
@@ -448,8 +432,6 @@ async function fetchKline(code, beg, end, retry = 0) {
           closes: filtered.map(x => parseFloat(x.split(',')[1]))
         };
       } else {
-        // 【修复2】诊断日志：把实际拉取到的K线日期范围打印出来，而不是只抛一个看不出原因的错误
-        // 下次再失败时，直接看系统日志面板就能确认是"返回了陈旧/不相关的数据"还是"该区间确实无交易"
         const firstD = klines[0].split(',')[0];
         const lastD = klines[klines.length - 1].split(',')[0];
         logGlobal(`诊断: ${code} 实际拉取到 ${klines.length} 条K线，范围 ${firstD} ~ ${lastD}；但请求区间是 ${begStr} ~ ${endStr}，两者无交集`, "warn");
@@ -460,8 +442,6 @@ async function fetchKline(code, beg, end, retry = 0) {
     }
   } catch (err) {
     if (retry < 2) { 
-      // 【修复7】把固定1秒重试间隔改成递增等待（1.5秒 / 3秒），给可能触发的限流窗口多一点冷却时间，
-      // 而不是在被限流的同一个时间窗口里又立刻补两枪、反而加重限流。
       const waitMs = 1500 * (retry + 1);
       logGlobal(`正在尝试重新连接 ${code} (重试间隔 ${(waitMs/1000).toFixed(1)} 秒)...`, "warn");
       await new Promise(r => setTimeout(r, waitMs)); 
@@ -523,7 +503,6 @@ async function resolveStockInfo(query) {
           let token = cfg.token || "";
           let gistId = cfg.gistId || "";
           
-          // 如果是以 base64: 开头，则自动在前端解密，防范 GitHub 官方密匙扫描器强行吊销 Token
           if (token.startsWith('base64:')) {
             token = atob(token.substring(7));
           }
@@ -647,9 +626,7 @@ async function resolveStockInfo(query) {
       if(!selected.length) throw new Error("请先勾选股票");
       const beg = document.getElementById('startDate').value.replace(/-/g,'');
       const end = document.getElementById('endDate').value.replace(/-/g,'');
-      // 【修复4】日期输入兜底校验：日期输入框在部分浏览器/手机端手动输入年份时，
-      // 容易把"2020"误输成"0020"（只填了后两位就跳到下一段），导致请求区间变成一个不存在的远古年份。
-      // 这里直接拦下来，提示用户重新选择，而不是让请求悄悄发出去再报"无交易"这种看不出原因的错误。
+      
       const begYear = parseInt(beg.slice(0,4)), endYear = parseInt(end.slice(0,4));
       const nowYear = new Date().getFullYear();
       if (!beg || !end || begYear < 1990 || begYear > nowYear + 1 || endYear < 1990 || endYear > nowYear + 1) {
@@ -667,20 +644,15 @@ async function resolveStockInfo(query) {
 
       // ===== 【Smart Pacing 智能网络避让调度】：秒开缓存、防刷拦截双完美 =====
       const stocks = [];
-      // 【修复8】熔断计数：原逻辑里只要某只股票失败，依旧会对列表里剩下的每一只都重复跑完整的"重试+多重兜底"流程，
-      // 一旦真的被限流，这种行为只会越打越多请求，让限流窗口越拖越长。这里改成：
-      // 一旦连续出现"真的没拿到任何数据"(无有效行情数据，不是日期没交集那种)的失败，达到2次就直接熔断、停止剩余请求，
-      // 让用户知道大概率是被限流了，先别再连续重试。
       let consecutiveEmptyFails = 0;
       for(const s of selected) { 
         try { 
-          hitNetworkThisTurn = false; // 重置本轮网络探测器信号
+          hitNetworkThisTurn = false; 
           log(`正在同步行情: ${s.name}...`);
           const kdata = await fetchKline(s.code, beg, end);
           stocks.push({ code: s.code, name: s.name, ...kdata }); 
-          consecutiveEmptyFails = 0; // 一旦有一只成功，说明接口是通的，清零计数
+          consecutiveEmptyFails = 0; 
           
-          // 智能错峰：如果本轮真正拉取了网络，执行安全静默 1.2 秒（股票越多、越容易触发频率限制，留更大缓冲）；如果是本地缓存，执行 0ms 瞬间秒开！
           if (hitNetworkThisTurn) {
             await sleep(1200); 
           }
@@ -695,7 +667,6 @@ async function resolveStockInfo(query) {
           }
         } 
       }
-      // ===== 调度重构结束 =====
       
       if(stocks.length === 0) throw new Error("无可用的历史行情数据");
 
@@ -727,25 +698,39 @@ async function resolveStockInfo(query) {
 
       const results = stocks.map(ds => {
         const maB = MathUtil.sma(ds.closes, conf.mb), maS = MathUtil.sma(ds.closes, conf.ms);
+        const ma120 = MathUtil.sma(ds.closes, 120); // 引入 120 日均线
         const mins = MathUtil.rollingMin(ds.closes, conf.look);
         const sigs = new Array(ds.dates.length).fill(false);
         const trades = []; let hold = false, bIdx = -1;
+        
         for(let i=0; i<ds.closes.length; i++){
           const pr = ds.closes[i];
-          if(!hold){ if(maB[i] && pr > maB[i] && pr >= mins[i]*(1+conf.rise)) { hold=true; bIdx=i; } }
-          else { if(maS[i] && pr < maS[i]*(1-conf.drop)) { hold=false; trades.push({bd:ds.dates[bIdx], bp:ds.closes[bIdx], sd:ds.dates[i], sp:pr, status:'已结清'}); } }
+          const m120 = ma120[i];
+          
+          // 跌破120日均线过滤判定：若 120 日线已生成，且当前价在其下方
+          const below120 = m120 !== null && pr < m120;
+          
+          if (below120) {
+            if (hold) {
+              // 触发 120 日线硬性退市/不满足趋势要求：强制卖出
+              hold = false;
+              trades.push({bd:ds.dates[bIdx], bp:ds.closes[bIdx], sd:ds.dates[i], sp:pr, status:'已结清'});
+            }
+            // 处于 120 日线下方时，绝对不执行买入逻辑
+          } else {
+            // 处于 120 日线上方，或 120 日线尚未生成时，运行原有策略
+            if(!hold){ 
+              if(maB[i] && pr > maB[i] && pr >= mins[i]*(1+conf.rise)) { hold=true; bIdx=i; } 
+            } else { 
+              if(maS[i] && pr < maS[i]*(1-conf.drop)) { hold=false; trades.push({bd:ds.dates[bIdx], bp:ds.closes[bIdx], sd:ds.dates[i], sp:pr, status:'已结清'}); } 
+            }
+          }
           sigs[i] = hold;
         }
         if(hold) trades.push({bd:ds.dates[bIdx], bp:ds.closes[bIdx], sd:ds.dates[ds.dates.length-1], sp:ds.closes[ds.dates.length-1], status:'持仓中'});
         return { ...ds, sigs, trades };
       });
 
-      // 【修复5】关键问题：原代码用 results[0].dates 当作所有股票共用的时间轴，按数组下标 i 直接对齐。
-      // 但不同股票的实际交易日并不保证完全一致（停牌、上市时间不同、退市等都会导致某只股票的K线条数/顺序和别的股票不一样）。
-      // 一旦某只股票在某个位置缺一天，后面所有按下标取值就全部错位，closes[i] 会变成 undefined，
-      // undefined 参与运算得到 NaN，而 NaN 一旦进入复利链就会一直传染下去，导致净值曲线在出问题的那天之后直接"消失"
-      // (Chart.js 遇到 NaN 就不画线了)，最终汇总的策略收益也变成 NaN%。
-      // 这里改为按"真实日期"建立统一时间轴 + 逐股票的 日期->收盘价/信号 映射表，缺失数据的交易日做"停牌期间收益记0、信号维持上一次状态"处理。
       const dateSet = new Set();
       results.forEach(r => r.dates.forEach(d => dateSet.add(d)));
       const dates = Array.from(dateSet).sort();
@@ -765,7 +750,6 @@ async function resolveStockInfo(query) {
         const d = dates[i];
         let dailyRetSum = 0;
 
-        // 先用昨日持仓 (prevIdx) 计算今日组合收益：只对今天有真实成交价的成分计入涨跌，停牌的当天记 0（净值持平）
         if (i > 0 && prevIdx.length > 0) {
           prevIdx.forEach(idx => {
             const rec = lookups[idx].get(d);
@@ -776,7 +760,6 @@ async function resolveStockInfo(query) {
           curEq *= (1 + dailyRetSum / prevIdx.length);
         }
 
-        // 再用今天的真实数据更新每只股票的状态（收盘价、信号），没有数据的股票维持上一次的状态（视为停牌中）
         results.forEach((r, idx) => {
           const rec = lookups[idx].get(d);
           if (rec) {
@@ -792,8 +775,6 @@ async function resolveStockInfo(query) {
         const wPer = curIdx.length ? 100/curIdx.length : 0;
         results.forEach((s,idx) => weights[idx].push(curIdx.includes(idx)?wPer:0));
         prevIdx = curIdx;
-        // 基准线同样改用日期对齐后的 carry-forward 价格（lastClose），而不是按下标取值；
-        // 尚未"开始"（即该日期之前没有任何真实数据）的股票视为还未建仓，用其首个可用收盘价占位（0%涨跌贡献）
         benchmarkLine.push(results.reduce((sum, s, idx) => sum + ((cap/results.length)/s.closes[0]) * (started[idx] ? lastClose[idx] : s.closes[0]), 0));
       }
 
@@ -834,8 +815,6 @@ async function resolveStockInfo(query) {
     } catch(e) { log(e.message, "err"); } finally { btn.disabled = false; }
   };
 
-  // 【修复6】"添加"按钮原来没有绑定任何事件 —— HTML里有按钮、JS里有 FavManager.add() 方法，
-  // 但两者从未被连接起来，所以点击完全没反应。这里补上点击/回车触发，并加个简单的状态反馈。
   document.getElementById('addFavBtn').onclick = async function(){
     const codeInput = document.getElementById('newCode');
     const tagInput = document.getElementById('newTag');
