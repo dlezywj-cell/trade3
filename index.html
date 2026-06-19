@@ -233,6 +233,24 @@ function jsonpRequest(url, callbackParamName = 'cb') {
   });
 }
 
+// 【新增】腾讯财经的接口不是"回调函数"风格，而是"var 变量赋值"风格（响应体是 `var xxx = {...}`），
+// 所以需要单独一种脚本注入方式：脚本一加载完，变量就已经赋值好了，直接在 onload 里读取全局变量即可。
+function jsonpVarRequest(url, varName) {
+  return new Promise((resolve, reject) => {
+    const script = document.createElement('script');
+    script.src = url;
+    script.onload = () => {
+      const data = window[varName];
+      delete window[varName];
+      document.body.removeChild(script);
+      if (data === undefined) reject(new Error("JSONP(var) 未获取到数据"));
+      else resolve(data);
+    };
+    script.onerror = () => { delete window[varName]; document.body.removeChild(script); reject(new Error("JSONP(var) 载入失败")); };
+    document.body.appendChild(script);
+  });
+}
+
 const getEmSecId = c => { 
   if (!c) return "0.000000";
   c = c.toString().trim().toUpperCase(); 
@@ -241,6 +259,16 @@ const getEmSecId = c => {
   if (c.includes('.US')) return '105.' + raw;
   if (raw.startsWith('6')) return '1.' + raw;
   return '0.' + raw; 
+};
+
+// 【新增】把东方财富的 secId（如 "1.600519" / "0.002847" / "116.00700"）转换成腾讯财经的代码格式（如 "sh600519"）。
+// 美股 (105./106./107. 开头) 腾讯这边代码规则不一样、不太通用，直接返回 null，跳过腾讯兜底，继续靠原有的美股多板块重试逻辑。
+const secIdToTcCode = secId => {
+  const [prefix, raw] = secId.split('.');
+  if (prefix === '1') return 'sh' + raw;
+  if (prefix === '0') return 'sz' + raw;
+  if (prefix === '116') return 'hk' + raw.padStart(5, '0');
+  return null;
 };
 
 // 全局计算引擎
@@ -343,6 +371,53 @@ async function fetchHistoryKline(secId, beg, end) {
     } catch(usErr) {}
   }
 
+  // 5. 【新增】数据源切换：东方财富的所有变体都拿不到数据时，换一个完全独立的数据源（腾讯财经 gtimg.cn）再试一次。
+  // 两家公司、两套基础设施，东方财富那边被限流/临时封锁时，大概率不会同时影响腾讯这边，避免"全军覆没"。
+  if (data.length === 0) {
+    const tcCode = secIdToTcCode(secId);
+    if (tcCode) {
+      logGlobal(`东方财富未拿到数据，尝试切换至腾讯财经备用源 (${tcCode})...`, "warn");
+      try {
+        hitNetworkThisTurn = true;
+        const begISO = beg.replace(/(\d{4})(\d{2})(\d{2})/, '$1-$2-$3');
+        const endISO = end.replace(/(\d{4})(\d{2})(\d{2})/, '$1-$2-$3');
+        const varName = 'tc_kdata_' + Math.random().toString(36).substr(2, 9);
+        // 【修复9】之前这里的"获取多少条"写的是 8000——查了好几个独立参考资料/开源脚本，腾讯日K线接口的这个参数
+        // 实际使用的全部是 640，8000 大概率超出了服务端允许的上限，被直接判定为非法参数（对应日志里的 "param error"）。
+        // 改成 640 后，腾讯只能稳定补全"距今约640个交易日"（约2.5年）以内的区间；超过这个跨度的部分用腾讯兜底时会缺失，
+        // 但它本来就只是东方财富彻底失败时的最后一道保险，能补到多少算多少，比完全没有数据强。
+        const tcUrl = `https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?_var=${varName}&param=${tcCode},day,${begISO},${endISO},640,qfq&_ts=${Date.now()}`;
+        const tcJson = await jsonpVarRequest(tcUrl, varName);
+        const stockData = tcJson?.data?.[tcCode];
+        // 腾讯前复权数据通常存在 qfqday 字段下，指数等没有复权概念的品种会落在 day 字段下
+        const rawList = stockData ? (stockData.qfqday || stockData.day || []) : [];
+        // 腾讯单条格式: [日期, 开盘, 收盘, 最高, 最低, 成交量]；转换成跟东方财富一致的 "日期,收盘价" 字符串，
+        // 这样后面 fetchKline 里统一的日期过滤/解析逻辑完全不用改，两个数据源共用一套下游代码。
+        data = rawList.filter(row => row && row[0] && row[2]).map(row => `${row[0]},${row[2]}`);
+        if (data.length > 0) {
+          logGlobal(`腾讯财经返回成功，已补全该股票的行情`, "ok");
+          // 【修复10】之前不管区间长短，只要"返回的第一天"晚于"请求的开始日"就提示截断——
+          // 但区间开头如果恰好是周末/法定假日（比如元旦），第一个交易日本来就会比1月1日晚几天，这是正常现象，不是被640条上限截断。
+          // 改成只在"请求跨度本身长到640个交易日真的可能装不下"（约2.5年以上）时才做这个判断，短区间不会再被误报。
+          const spanCalendarDays = (new Date(endISO) - new Date(begISO)) / 86400000;
+          const firstReturnedDate = data[0].split(',')[0];
+          if (spanCalendarDays > 950 && firstReturnedDate > begISO) {
+            logGlobal(`提示: 腾讯财经单次最多取640个交易日，实际只覆盖到 ${firstReturnedDate} ~ ${endISO}，比请求的 ${begISO} 起始日要晚`, "warn");
+          }
+        } else {
+          // 【诊断】请求没有报错(没进catch)，但是解析不出有效K线——把腾讯原始返回结构打出来，确认是格式变了还是真的没数据
+          logGlobal(`腾讯财经请求成功但解析为空，原始返回结构: ${JSON.stringify(tcJson).slice(0, 300)}`, "err");
+        }
+      } catch(tcErr) {
+        // 【诊断】之前这里是空的 catch，完全看不出失败原因。现在把具体异常信息打出来：
+        // 如果是 "JSONP(var) 载入失败"，说明请求本身被拦截/网络不通（域名被拦截、断网等）；
+        // 如果是 "JSONP(var) 未获取到数据"，说明脚本是加载成功的，但响应内容执行后没能正确设置全局变量
+        // （常见原因：腾讯实际返回的不是 var 包装的JS，而是纯JSON，作为脚本执行直接报语法错误，变量根本没赋上值）。
+        logGlobal(`腾讯财经备用源也失败: ${tcErr.message}`, "err");
+      }
+    }
+  }
+
   if (data.length > 0) {
     try {
       await setCache(cacheKey, { date: todayStr, data: data });
@@ -385,8 +460,11 @@ async function fetchKline(code, beg, end, retry = 0) {
     }
   } catch (err) {
     if (retry < 2) { 
-      logGlobal(`正在尝试重新连接 ${code} (重试间隔 1.0 秒)...`, "warn");
-      await new Promise(r => setTimeout(r, 1000)); 
+      // 【修复7】把固定1秒重试间隔改成递增等待（1.5秒 / 3秒），给可能触发的限流窗口多一点冷却时间，
+      // 而不是在被限流的同一个时间窗口里又立刻补两枪、反而加重限流。
+      const waitMs = 1500 * (retry + 1);
+      logGlobal(`正在尝试重新连接 ${code} (重试间隔 ${(waitMs/1000).toFixed(1)} 秒)...`, "warn");
+      await new Promise(r => setTimeout(r, waitMs)); 
       return fetchKline(code, beg, end, retry + 1);
     }
     throw err;
@@ -589,18 +667,33 @@ async function resolveStockInfo(query) {
 
       // ===== 【Smart Pacing 智能网络避让调度】：秒开缓存、防刷拦截双完美 =====
       const stocks = [];
+      // 【修复8】熔断计数：原逻辑里只要某只股票失败，依旧会对列表里剩下的每一只都重复跑完整的"重试+多重兜底"流程，
+      // 一旦真的被限流，这种行为只会越打越多请求，让限流窗口越拖越长。这里改成：
+      // 一旦连续出现"真的没拿到任何数据"(无有效行情数据，不是日期没交集那种)的失败，达到2次就直接熔断、停止剩余请求，
+      // 让用户知道大概率是被限流了，先别再连续重试。
+      let consecutiveEmptyFails = 0;
       for(const s of selected) { 
         try { 
           hitNetworkThisTurn = false; // 重置本轮网络探测器信号
           log(`正在同步行情: ${s.name}...`);
           const kdata = await fetchKline(s.code, beg, end);
           stocks.push({ code: s.code, name: s.name, ...kdata }); 
+          consecutiveEmptyFails = 0; // 一旦有一只成功，说明接口是通的，清零计数
           
-          // 智能错峰：如果本轮真正拉取了网络，执行安全静默 600ms（规避黑客频次过滤）；如果是本地缓存，执行 0ms 瞬间秒开！
+          // 智能错峰：如果本轮真正拉取了网络，执行安全静默 1.2 秒（股票越多、越容易触发频率限制，留更大缓冲）；如果是本地缓存，执行 0ms 瞬间秒开！
           if (hitNetworkThisTurn) {
-            await sleep(600); 
+            await sleep(1200); 
           }
-        } catch(e){ log(`${s.name} 数据抓取失败 (${e.message})`, "warn"); } 
+        } catch(e){ 
+          log(`${s.name} 数据抓取失败 (${e.message})`, "warn"); 
+          if (e.message.includes("无有效行情数据")) {
+            consecutiveEmptyFails++;
+            if (consecutiveEmptyFails >= 2) {
+              log(`连续 ${consecutiveEmptyFails} 只股票均无法拉取到任何数据，大概率是触发了行情接口的限流，已停止剩余请求，请等几分钟后再重试`, "err");
+              break;
+            }
+          }
+        } 
       }
       // ===== 调度重构结束 =====
       
