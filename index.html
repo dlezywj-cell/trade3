@@ -301,7 +301,6 @@ const MathUtil = {
 // 多层异步解耦降级抓取 + 自动交叉市场错判校验引擎
 async function fetchHistoryKline(secId, beg, end) {
   const todayStr = new Date().toISOString().split('T')[0]; 
-  // 【修复3】缓存键加入 beg/end，避免不同回测区间互相覆盖污染（之前固定取"最近600条"，任何区间都共用同一份缓存）
   const cacheKey = `kline_${secId}_${beg}_${end}`; 
   
   let cached = null;
@@ -312,10 +311,6 @@ async function fetchHistoryKline(secId, beg, end) {
     }
   } catch(cacheErr) {}
   
-  // 【修复1+3】不再使用固定的 end=20500101&lmt=600（那样永远只能拿到"距今最近600个交易日"，
-  // 如果用户选的区间是更早的历史时段，请求出来的数据自然和区间没有交集）。
-  // 改为直接把用户选择的 beg/end 传给 Eastmoney 接口，lmt 给一个足够大的上限以覆盖任意长跨度。
-  // 同时加入毫秒级时间戳缓存破坏参数 (_ts)，防止浏览器/CDN/运营商代理缓存陈旧响应。
   let baseParams = `fields1=f1&fields2=f51,f53&klt=101&beg=${beg}&end=${end}&lmt=20000&_ts=${Date.now()}`;
   let url = `https://push2his.eastmoney.com/api/qt/stock/kline/get?secid=${secId}&${baseParams}&fqt=1`;
   
@@ -323,7 +318,7 @@ async function fetchHistoryKline(secId, beg, end) {
   
   // 1. 独立解耦拉取前复权数据 (fqt=1)
   try {
-    hitNetworkThisTurn = true; // 触发网络嗅探标记
+    hitNetworkThisTurn = true; 
     let json = await jsonpRequest(url);
     data = json?.data?.klines || [];
   } catch(fqt1Err) {}
@@ -698,27 +693,32 @@ async function resolveStockInfo(query) {
 
       const results = stocks.map(ds => {
         const maB = MathUtil.sma(ds.closes, conf.mb), maS = MathUtil.sma(ds.closes, conf.ms);
-        const ma120 = MathUtil.sma(ds.closes, 120); // 引入 120 日均线
+        const ma120 = MathUtil.sma(ds.closes, 120); 
         const mins = MathUtil.rollingMin(ds.closes, conf.look);
         const sigs = new Array(ds.dates.length).fill(false);
         const trades = []; let hold = false, bIdx = -1;
+        
+        // 增加永久拉黑标志位
+        let isBlacklisted = false;
         
         for(let i=0; i<ds.closes.length; i++){
           const pr = ds.closes[i];
           const m120 = ma120[i];
           
-          // 跌破120日均线过滤判定：若 120 日线已生成，且当前价在其下方
-          const below120 = m120 !== null && pr < m120;
+          // 如果 120 日线已生成，且当前收盘价跌破 120 日线，则永久拉黑该股票
+          if (m120 !== null && pr < m120) {
+            isBlacklisted = true;
+          }
           
-          if (below120) {
+          if (isBlacklisted) {
             if (hold) {
-              // 触发 120 日线硬性退市/不满足趋势要求：强制卖出
+              // 触发首次跌破时，如果当前持仓则强制平仓结清
               hold = false;
               trades.push({bd:ds.dates[bIdx], bp:ds.closes[bIdx], sd:ds.dates[i], sp:pr, status:'已结清'});
             }
-            // 处于 120 日线下方时，绝对不执行买入逻辑
+            // 被拉黑后，之后的循环永远维持空仓状态，无法再触发买入
           } else {
-            // 处于 120 日线上方，或 120 日线尚未生成时，运行原有策略
+            // 未被拉黑时，正常运行买卖判定
             if(!hold){ 
               if(maB[i] && pr > maB[i] && pr >= mins[i]*(1+conf.rise)) { hold=true; bIdx=i; } 
             } else { 
