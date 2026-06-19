@@ -135,6 +135,11 @@
             <div><label>买入:MA线</label><input type="number" id="maBuy" value="10"></div>
             <div><label>卖出:MA线</label><input type="number" id="maSell" value="20"></div>
           </div>
+          <!-- 【新增】防反复进场拉黑机制参数 -->
+          <div class="row2">
+            <div><label>拉黑均线天数</label><input type="number" id="blacklistMa" value="120"></div>
+            <div><label>触发拉黑次数</label><input type="number" id="blacklistCount" value="2"></div>
+          </div>
           <div class="row2">
             <div><label>跌破幅度%卖出</label><input type="number" id="sellDropPct" value="5"></div>
             <div><label>单边手续费%</label><input type="number" id="commission" value="0"></div>
@@ -634,7 +639,10 @@ async function resolveStockInfo(query) {
         rise: parseInt(document.getElementById('riseFromBottom').value)/100,
         look: parseInt(document.getElementById('bottomLookback').value),
         drop: parseInt(document.getElementById('sellDropPct').value)/100,
-        comm: parseFloat(document.getElementById('commission').value)/100
+        comm: parseFloat(document.getElementById('commission').value)/100,
+        // 读取新增的拉黑限制配置
+        blMa: parseInt(document.getElementById('blacklistMa').value),
+        blCount: parseInt(document.getElementById('blacklistCount').value)
       };
 
       // ===== 【Smart Pacing 智能网络避让调度】：秒开缓存、防刷拦截双完美 =====
@@ -693,32 +701,45 @@ async function resolveStockInfo(query) {
 
       const results = stocks.map(ds => {
         const maB = MathUtil.sma(ds.closes, conf.mb), maS = MathUtil.sma(ds.closes, conf.ms);
-        const ma120 = MathUtil.sma(ds.closes, 120); 
+        // 动态读取选定的拉黑参考均线天数
+        const maTarget = MathUtil.sma(ds.closes, conf.blMa); 
         const mins = MathUtil.rollingMin(ds.closes, conf.look);
         const sigs = new Array(ds.dates.length).fill(false);
         const trades = []; let hold = false, bIdx = -1;
         
-        // 增加永久拉黑标志位
-        let isBlacklisted = false;
+        let dropCounter = 0;         // 记录已经累计跌破的次数
+        let wasAboveOrEqual = true;  // 状态监测器：记录前一日是否在均线之上或相等
+        let isBlacklisted = false;   // 永久拉黑标记位
         
         for(let i=0; i<ds.closes.length; i++){
           const pr = ds.closes[i];
-          const m120 = ma120[i];
+          const mVal = maTarget[i];
           
-          // 如果 120 日线已生成，且当前收盘价跌破 120 日线，则永久拉黑该股票
-          if (m120 !== null && pr < m120) {
-            isBlacklisted = true;
+          if (mVal !== null) {
+            const currentlyBelow = pr < mVal;
+            // 穿透判定：前一日在均线上方（或等于），当前收盘跌到均线下方，计为1次跌破
+            if (currentlyBelow && wasAboveOrEqual) {
+              dropCounter++;
+              wasAboveOrEqual = false; // 更新状态：现在已经在均线下方了
+            } else if (!currentlyBelow) {
+              wasAboveOrEqual = true;  // 重新站上均线（或等于均线），恢复穿透监测器状态
+            }
+            
+            // 累计跌破次数达到或超过设定的上限时，立即启动永久拉黑
+            if (dropCounter >= conf.blCount) {
+              isBlacklisted = true;
+            }
           }
           
           if (isBlacklisted) {
             if (hold) {
-              // 触发首次跌破时，如果当前持仓则强制平仓结清
+              // 触发永久拉黑阈值的那一天，如果依然持仓，则强制执行清仓卖出
               hold = false;
               trades.push({bd:ds.dates[bIdx], bp:ds.closes[bIdx], sd:ds.dates[i], sp:pr, status:'已结清'});
             }
-            // 被拉黑后，之后的循环永远维持空仓状态，无法再触发买入
+            // 被拉黑后，之后的循环永远维持空仓状态，不参与买入
           } else {
-            // 未被拉黑时，正常运行买卖判定
+            // 未拉黑时，正常运行策略判定
             if(!hold){ 
               if(maB[i] && pr > maB[i] && pr >= mins[i]*(1+conf.rise)) { hold=true; bIdx=i; } 
             } else { 
