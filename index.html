@@ -634,26 +634,44 @@ async function resolveStockInfo(query) {
 
   const FavManager = {
     key: 'BT_FAV_PRO_V3',
+    filterKey: 'BT_FAV_FILTER_V1',
     default: [{code:'600519.SH', name:'贵州茅台', tag:'白酒', selected:true},{code:'300750.SZ', name:'宁德时代', tag:'新能源', selected:true}],
     get() { const d = localStorage.getItem(this.key); return d ? JSON.parse(d) : this.default; },
+    getFilter() { return localStorage.getItem(this.filterKey) || ''; },
+    setFilter(q) {
+      const v = (q || '').trim();
+      if (v) localStorage.setItem(this.filterKey, v);
+      else localStorage.removeItem(this.filterKey);
+    },
     save(list) { localStorage.setItem(this.key, JSON.stringify(list)); this.render(); },
     render() {
       const list = this.get();
-      document.getElementById('favBody').innerHTML = list.map((item, index) => `
+      const filter = this.getFilter();
+      const visible = filter ? list.filter(item => (item.tag||'').includes(filter) || item.name.includes(filter)) : list;
+      document.getElementById('favBody').innerHTML = visible.map((item, index) => `
         <tr class="${item.selected ? 'active' : ''}">
-          <td><input type="checkbox" ${item.selected ? 'checked' : ''} onchange="FavManager.toggle(${index})"></td>
+          <td><input type="checkbox" ${item.selected ? 'checked' : ''} onchange="FavManager.toggleByCode('${item.code}')"></td>
           <td>${item.name}<br><small>${item.code}</small></td>
-          <td><input type="text" class="fav-input-tag" style="background:transparent;border:1px solid transparent;color:inherit;width:100%" value="${item.tag || ''}" onchange="FavManager.updateTag(${index}, this.value)"></td>
-          <td><span class="fav-btn-del" onclick="FavManager.remove(${index})">×</span></td>
+          <td><input type="text" class="fav-input-tag" style="background:transparent;border:1px solid transparent;color:inherit;width:100%" value="${item.tag || ''}" onchange="FavManager.updateTagByCode('${item.code}', this.value)"></td>
+          <td><span class="fav-btn-del" onclick="FavManager.removeByCode('${item.code}')">×</span></td>
         </tr>
       `).join('');
+      document.getElementById('groupSearch').value = filter;
     },
     batchSelect(s) { const list = this.get(); list.forEach(i => i.selected = s); this.save(list); },
     inverseSelect() { const list = this.get(); list.forEach(i => i.selected = !i.selected); this.save(list); },
-    selectByQuery(q) { if(!q) return; const list = this.get(); list.forEach(i => { if((i.tag||"").includes(q) || i.name.includes(q)) i.selected = true; }); this.save(list); document.getElementById('groupSearch').value = ''; },
-    toggle(idx) { const list = this.get(); list[idx].selected = !list[idx].selected; this.save(list); },
-    remove(idx) { const list = this.get(); list.splice(idx,1); this.save(list); },
-    updateTag(idx, v) { const list = this.get(); list[idx].tag = v; localStorage.setItem(this.key, JSON.stringify(list)); },
+    selectByQuery(q) {
+      this.setFilter(q);
+      const list = this.get();
+      const f = this.getFilter();
+      const visible = f ? list.filter(i => (i.tag||'').includes(f) || i.name.includes(f)) : list;
+      visible.forEach(i => i.selected = true);
+      this.save(list);
+    },
+    clearFilter() { this.setFilter(''); this.render(); },
+    toggleByCode(code) { const list = this.get(); const item = list.find(i => i.code === code); if(!item) return; item.selected = !item.selected; this.save(list); },
+    removeByCode(code) { const list = this.get(); const idx = list.findIndex(i => i.code === code); if(idx < 0) return; list.splice(idx,1); this.save(list); },
+    updateTagByCode(code, v) { const list = this.get(); const item = list.find(i => i.code === code); if(!item) return; item.tag = v; localStorage.setItem(this.key, JSON.stringify(list)); this.render(); },
     async add(q, t) {
       try {
         const res = await resolveStockInfo(q);
@@ -965,6 +983,10 @@ async function resolveStockInfo(query) {
   };
   document.getElementById('newCode').addEventListener('keypress', e => { if (e.keyCode === 13) document.getElementById('addFavBtn').click(); });
   document.getElementById('newTag').addEventListener('keypress', e => { if (e.keyCode === 13) document.getElementById('addFavBtn').click(); });
+  document.getElementById('groupSearch').addEventListener('input', e => {
+    FavManager.setFilter(e.target.value);
+    FavManager.render();
+  });
 
   FavManager.render();
 })();
