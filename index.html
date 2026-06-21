@@ -1,0 +1,973 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>趋势交易回测终端 - 终极同步版</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<script src="https://cdn.bootcdn.net/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<style>
+  :root{
+    --bg:#0a0c10; --panel:#11141b; --panel-alt:#161a23; --border:#232938;
+    --text:#e7eaf0; --text-dim:#8a93a8; --amber:#f0b429; --amber-dim:#9a6f10;
+    --green:#2bb673; --red:#e5484d; --blue:#4299e1; --purple:#9f7aea; --mono:'IBM Plex Mono', monospace; --display:'Space Grotesk', sans-serif;
+  }
+  *{box-sizing:border-box;}
+  body{margin:0;padding:24px;background:var(--bg);color:var(--text);font-family:var(--mono);max-width:1300px;margin:0 auto;}
+  
+  header{display:flex;align-items:baseline;justify-content:space-between;border-bottom:1px solid var(--border);padding-bottom:16px;margin-bottom:20px;}
+  header h1{font-family:var(--display);font-size:26px;margin:0;letter-spacing:-0.02em;}
+  header h1 span{color:var(--amber);}
+
+  .sync-actions{display:flex;gap:8px;}
+  .sync-actions button{background:var(--panel-alt);border:1px solid var(--border);color:var(--amber);font-family:var(--display);font-size:12px;padding:5px 12px;border-radius:4px;cursor:pointer;}
+  .sync-actions button:hover{background:var(--amber);color:var(--bg);}
+
+  .layout{display:grid;grid-template-columns:360px 1fr;gap:20px;}
+  
+  @media (max-width:950px){
+    .layout{grid-template-columns:1fr;}
+    body{padding:15px;}
+    header{flex-direction:column; align-items:flex-start; gap:10px;}
+    .sync-actions{width:100%; justify-content:space-between;}
+  }
+
+  .panel{background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:18px;margin-bottom:16px;}
+  .panel h2{font-family:var(--display);font-size:13px;text-transform:uppercase;color:var(--text-dim);margin:0 0 14px 0;letter-spacing:0.1em;display:flex;justify-content:space-between;align-items:center;}
+  label{display:block;font-size:11px;color:var(--text-dim);margin:12px 0 4px 0;}
+  input{width:100%;background:var(--panel-alt);border:1px solid var(--border);color:var(--text);font-family:var(--mono);font-size:13px;padding:8px;border-radius:5px;outline:none;}
+  .row2{display:grid;grid-template-columns:1fr 1fr;gap:10px;}
+  button#runBtn{font-family:var(--display);font-weight:700;border:none;border-radius:6px;padding:12px;cursor:pointer;width:100%;margin-top:15px;background:var(--amber);color:#1a1300;font-size:15px;}
+  button#runBtn:disabled{opacity:0.4;cursor:not-allowed;}
+
+  .search-group-bar{background:var(--panel-alt);padding:8px;border-radius:6px;margin-bottom:10px;border:1px solid var(--amber-dim);}
+  .batch-actions{display:flex; gap:8px; margin-bottom:10px;}
+  .btn-mini{background:var(--panel-alt); border:1px solid var(--border); color:var(--text-dim); font-size:10px; padding:4px 8px; border-radius:4px; cursor:pointer;}
+  .fav-table-container{max-height: 250px; overflow-y: auto; border: 1px solid var(--border); border-radius: 4px; background: #0d1117;}
+  .fav-table{width: 100%; border-collapse: collapse; font-size: 11px;}
+  .fav-table th, .fav-table td{text-align: left; padding: 8px; border-bottom: 1px solid var(--border); color: var(--text-dim);}
+  .fav-table tr.active td{color: var(--amber); background: rgba(240, 180, 41, 0.05);}
+  .fav-btn-del{color: var(--red); cursor: pointer; font-size: 14px;}
+  .fav-add-bar{display: grid; grid-template-columns: 1fr 1fr auto; gap: 4px; margin-top: 8px;}
+
+  .collapsible-trigger{cursor:pointer;color:var(--amber);font-size:10px;text-transform:none;}
+  .collapsible-content{display:none;margin-top:10px;border-top:1px solid var(--border);padding-top:10px;}
+  .collapsible-content.show{display:block;}
+
+  #log{background:#05060a;border:1px solid var(--border);height:280px;overflow-y:auto;font-size:11px;padding:10px;line-height:1.6;border-radius:4px;}
+  .t-err{color:var(--red);} .t-ok{color:var(--green);} .t-warn{color:var(--amber);}
+
+  .stats{display:grid;grid-template-columns:repeat(2,1fr);gap:12px;margin-bottom:18px;}
+  .stat{background:var(--panel-alt);border:1px solid var(--border);padding:14px;border-radius:7px;}
+  .stat .label{font-size:10px;color:var(--text-dim);text-transform:uppercase;margin-bottom:4px;}
+  .stat .value{font-family:var(--display);font-size:24px;font-weight:700;}
+  .stat .sub{font-size:12px;color:var(--text-dim);margin-top:6px; line-height:1.5;}
+  .pos{color:var(--green);} .neg{color:var(--red);}
+  .chart-container{height:300px;position:relative;background:var(--panel-alt);border:1px solid var(--border);border-radius:7px;padding:10px;margin-bottom:10px;}
+  table{width:100%;border-collapse:collapse;font-size:12px;}
+  th,td{padding:8px;text-align:right;border-bottom:1px solid var(--border);}
+  th{color:var(--text-dim);font-size:10px;}
+  .stockblock{margin-bottom:30px;}
+  .stockblock h3{font-family:var(--display);font-size:16px;margin:0 0 10px 0;color:var(--amber);}
+  .table-scroll{overflow-x: auto; -webkit-overflow-scrolling: touch;}
+</style>
+</head>
+<body>
+
+<header>
+  <h1>趋势<span>交易</span>回测终端</h1>
+  <div class="sync-actions">
+    <button onclick="CloudSync.fetch()">拉取云端数据</button>
+    <button onclick="CloudSync.save()">同步当前列表</button>
+  </div>
+</header>
+
+<div class="layout">
+  <aside>
+    <div class="panel">
+      <h2>股票管理</h2>
+      <div class="search-group-bar">
+        <label style="margin-top:0; color:var(--amber)">按标签/名称批量选中</label>
+        <input type="text" id="groupSearch" placeholder="输入标签回车" onkeypress="if(event.keyCode==13) FavManager.selectByQuery(this.value)">
+      </div>
+      <div class="batch-actions">
+        <div class="btn-mini" onclick="FavManager.batchSelect(true)">全选</div>
+        <div class="btn-mini" onclick="FavManager.batchSelect(false)">全不选</div>
+        <div class="btn-mini" onclick="FavManager.inverseSelect()">反选</div>
+      </div>
+      <div class="fav-table-container">
+        <table class="fav-table">
+          <thead><tr><th width="30">选</th><th>代码/名称</th><th>标签</th><th width="20"></th></tr></thead>
+          <tbody id="favBody"></tbody>
+        </table>
+      </div>
+      <div class="fav-add-bar">
+        <input type="text" id="newCode" placeholder="代码/名称">
+        <input type="text" id="newTag" placeholder="标签">
+        <button id="addFavBtn" class="btn-mini" style="background:var(--amber);color:#000;border:none">添加</button>
+      </div>
+    </div>
+
+    <div class="panel">
+      <h2>回测配置</h2>
+      <div class="row2">
+        <div><label>开始日期</label><input type="date" id="startDate"></div>
+        <div><label>结束日期</label><input type="date" id="endDate"></div>
+      </div>
+      
+      <div>
+        <div class="collapsible-trigger" onclick="toggleCollapsible('advParams')">▼ 策略参数 & GitHub 同步</div>
+        <div id="advParams" class="collapsible-content">
+          <label>GitHub Token (需勾选 gist 权限)</label>
+          <input type="password" id="ghToken" placeholder="无需输入，自动拉取">
+          <label>Gist ID (URL末尾那串字符)</label>
+          <input type="text" id="ghGistId" placeholder="无需输入，自动拉取">
+          <hr style="border:0; border-top:1px dashed var(--border); margin:12px 0">
+          <label>初始总资金 (CNY)</label>
+          <input type="number" id="capital" value="1000000">
+          <div class="row2">
+            <div><label>底部上涨%激活</label><input type="number" id="riseFromBottom" value="15"></div>
+            <div><label>底部回看天数(不含当天)</label><input type="number" id="bottomLookback" value="60"></div>
+          </div>
+          <div class="row2">
+            <div><label>买入:MA线</label><input type="number" id="maBuy" value="10"></div>
+            <div><label>单边手续费%</label><input type="number" id="commission" value="0"></div>
+          </div>
+          <!-- 启动与退潮判定参数 -->
+          <div class="row2">
+            <div><label>退潮判定均线天数</label><input type="number" id="blacklistMa" value="120"></div>
+            <div><label>最大跌破幅度%</label><input type="number" id="belowPctLimit" value="15"></div>
+          </div>
+          <div class="row2">
+            <div><label>最大跌破天数</label><input type="number" id="belowDaysLimit" value="20"></div>
+            <div></div>
+          </div>
+          <div style="display:flex; align-items:center; gap:8px; margin-top:10px;">
+            <input type="checkbox" id="showBenchmark" checked style="width:auto">
+            <label style="margin:0">对比基准 (等权持有)</label>
+          </div>
+        </div>
+      </div>
+      <button id="runBtn">开始执行回测</button>
+      <input type="hidden" id="codes">
+    </div>
+
+    <div class="panel">
+      <h2>状态说明</h2>
+      <div style="font-size:12px; line-height:1.7; color:var(--text-dim);">
+        <div><span style="color:var(--green)">启动</span>：收盘价站上买入均线，同时高于近 `底部回看天数` 内最低点的 `底部上涨%激活`，所以买入。</div>
+        <div><span style="color:var(--red)">退潮</span>：收盘价跌破 120 日均线后，若跌破幅度超过 `最大跌破幅度%` 或持续时间超过 `最大跌破天数`，则清仓并拉黑。</div>
+        <div><span style="color:var(--amber)">正常回撤</span>：跌破 120 日均线但深度和时长都没超阈值，则继续持有，不清仓不拉黑。</div>
+        <div><span style="color:var(--amber)">持仓中</span>：只要没有触发退潮条件，就继续持有，不做短线来回切换。</div>
+        <div>你说的“集中状态”如果是指仓位集中，就是把资金压在少数最强标的上，而不是分散到很多弱票。</div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <h2>系统日志 <span class="collapsible-trigger" onclick="toggleCollapsible('logBox')">展开/收起</span></h2>
+      <div id="logBox" class="collapsible-content">
+        <div id="log"></div>
+      </div>
+    </div>
+  </aside>
+
+  <main>
+    <div id="resultsArea" style="display:none;">
+      <div class="panel">
+        <h2>组合核心表现</h2>
+        <div class="stats" id="statsRow"></div>
+        <div class="chart-container"><canvas id="equityChart"></canvas></div>
+      </div>
+      <div class="panel">
+        <h2>仓位动态分布 (0-100%)</h2>
+        <div class="chart-container" style="height: 240px;"><canvas id="weightChart"></canvas></div>
+      </div>
+      <div class="panel">
+        <h2>有效交易明细 (包含未结清)</h2>
+        <div class="table-scroll" id="stockDetails"></div>
+      </div>
+    </div>
+  </main>
+</div>
+
+<script>
+// 💡 无痕模式免密：如果您使用手机无痕模式，建议按照控制台提示，在 GitHub Pages 同级目录下新建 gist_config.json 配置文件
+const EMBEDDED_TOKEN = ""; 
+const EMBEDDED_GIST_ID = ""; 
+
+function toggleCollapsible(id) { document.getElementById(id).classList.toggle('show'); }
+
+// 全局日志管道
+let logGlobal = function() {};
+
+// 智能错峰传感器：用来侦测单次请求中是否真正发起了网络底层通信
+let hitNetworkThisTurn = false;
+
+// ===== 全局作用域：完整对齐工作版底层数据拉取和数学辅助引擎 =====
+
+const DB_NAME = 'StockHistoryDB_TrendV6'; 
+const STORE_NAME = 'klines_store_trend_v6';
+const dbPromise = new Promise((resolve, reject) => {
+  try {
+    const request = indexedDB.open(DB_NAME, 1);
+    request.onupgradeneeded = e => { const db = e.target.result; if (!db.objectStoreNames.contains(STORE_NAME)) db.createObjectStore(STORE_NAME); };
+    request.onsuccess = e => resolve(e.target.result);
+    request.onerror = e => reject(e);
+  } catch(e) { reject(e); }
+});
+
+async function getCache(key) {
+  try {
+    const db = await dbPromise; 
+    return new Promise(r => { 
+      const tx = db.transaction(STORE_NAME, 'readonly'); 
+      const req = tx.objectStore(STORE_NAME).get(key); 
+      req.onsuccess = () => r(req.result); 
+      req.onerror = () => r(null); 
+    });
+  } catch(e) { return null; }
+}
+async function setCache(key, val) {
+  try {
+    const db = await dbPromise; 
+    const tx = db.transaction(STORE_NAME, 'readwrite'); 
+    tx.objectStore(STORE_NAME).put(val, key); 
+  } catch(e) {}
+}
+
+function jsonpRequest(url, callbackParamName = 'cb') {
+  return new Promise((resolve, reject) => {
+    const callbackName = 'jsonp_cb_' + Math.random().toString(36).substr(2, 9);
+    const script = document.createElement('script');
+    const hasQuery = url.includes('?');
+    script.src = `${url}${hasQuery ? '&' : '?'}${callbackParamName}=${callbackName}`;
+    script.onerror = () => { delete window[callbackName]; document.body.removeChild(script); reject(new Error("JSONP 载入失败")); };
+    window[callbackName] = (data) => { delete window[callbackName]; document.body.removeChild(script); resolve(data); };
+    document.body.appendChild(script);
+  });
+}
+
+// 【新增】腾讯财经的接口不是"回调函数"风格，而是"var 变量赋值"风格（响应体是 `var xxx = {...}`），
+// 所以需要单独一种脚本注入方式：脚本一加载完，变量就已经赋值好了，直接在 onload 里读取全局变量即可。
+function jsonpVarRequest(url, varName) {
+  return new Promise((resolve, reject) => {
+    const script = document.createElement('script');
+    script.src = url;
+    script.onload = () => {
+      const data = window[varName];
+      delete window[varName];
+      document.body.removeChild(script);
+      if (data === undefined) reject(new Error("JSONP(var) 未获取到数据"));
+      else resolve(data);
+    };
+    script.onerror = () => { delete window[varName]; document.body.removeChild(script); reject(new Error("JSONP(var) 载入失败")); };
+    document.body.appendChild(script);
+  });
+}
+
+function shiftIsoDate(isoDate, deltaDays) {
+  const d = new Date(`${isoDate}T00:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + deltaDays);
+  return d.toISOString().slice(0, 10);
+}
+
+async function fetchTencentPagedKline(tcCode, begISO, endISO) {
+  const seen = new Set();
+  const merged = [];
+  let chunkEnd = endISO;
+  let safety = 0;
+
+  while (chunkEnd >= begISO && safety < 20) {
+    safety++;
+    const varName = 'tc_kdata_' + Math.random().toString(36).substr(2, 9);
+    const tcUrl = `https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?_var=${varName}&param=${tcCode},day,${begISO},${chunkEnd},640,qfq&_ts=${Date.now()}`;
+    const tcJson = await jsonpVarRequest(tcUrl, varName);
+    const stockData = tcJson?.data?.[tcCode];
+    const rawList = stockData ? (stockData.qfqday || stockData.day || []) : [];
+    const rows = rawList.filter(row => row && row[0] && row[2]).map(row => `${row[0]},${row[2]}`);
+
+    if (rows.length === 0) break;
+
+    for (const row of rows) {
+      const d = row.split(',')[0];
+      if (!seen.has(d)) {
+        seen.add(d);
+        merged.push(row);
+      }
+    }
+
+    const firstReturnedDate = rows[0].split(',')[0];
+    if (firstReturnedDate <= begISO) break;
+
+    const nextEnd = shiftIsoDate(firstReturnedDate, -1);
+    if (nextEnd >= chunkEnd) break;
+    chunkEnd = nextEnd;
+  }
+
+  return merged.sort((a, b) => a.split(',')[0].localeCompare(b.split(',')[0]));
+}
+
+const getEmSecId = c => { 
+  if (!c) return "0.000000";
+  c = c.toString().trim().toUpperCase(); 
+  let raw = c.replace(/\.[A-Z]+$/, '');
+  if (/^\d{5}$/.test(raw)) return '116.' + raw.padStart(5, '0');
+  if (c.includes('.US')) return '105.' + raw;
+  if (raw.startsWith('6')) return '1.' + raw;
+  return '0.' + raw; 
+};
+
+// 【新增】把东方财富的 secId（如 "1.600519" / "0.002847" / "116.00700"）转换成腾讯财经的代码格式（如 "sh600519"）。
+// 美股 (105./106./107. 开头) 腾讯这边代码规则不一样、不太通用，直接返回 null，跳过腾讯兜底，继续靠原有的美股多板块重试逻辑。
+const secIdToTcCode = secId => {
+  const [prefix, raw] = secId.split('.');
+  if (prefix === '1') return 'sh' + raw;
+  if (prefix === '0') return 'sz' + raw;
+  if (prefix === '116') return 'hk' + raw.padStart(5, '0');
+  return null;
+};
+
+// 全局计算引擎
+const MathUtil = {
+  sma(v, n) {
+    let r = new Array(v.length).fill(null), sum = 0;
+    for (let i = 0; i < v.length; i++) {
+      sum += v[i]; if (i >= n) sum -= v[i - n];
+      if (i >= n - 1) r[i] = sum / n;
+    }
+    return r;
+  },
+  rollingMin(v, n) {
+    let r = new Array(v.length).fill(null);
+    for (let i = 0; i < v.length; i++) {
+      const lookback = n === 0 ? i : Math.min(i, n);
+      if (lookback <= 0) continue;
+      const start = i - lookback;
+      let m = Infinity;
+      for (let j = start; j < i; j++) if (v[j] < m) m = v[j];
+      r[i] = m === Infinity ? null : m;
+    }
+    return r;
+  },
+  maxDD(eq) {
+    let peak = -Infinity, mdd = 0;
+    for (const v of eq) { if (v > peak) peak = v; let dd = (v / peak) - 1; if (dd < mdd) mdd = dd; }
+    return mdd;
+  }
+};
+
+// 多层异步解耦降级抓取 + 自动交叉市场错判校验引擎
+async function fetchHistoryKline(secId, beg, end) {
+  const todayStr = new Date().toISOString().split('T')[0]; 
+  const cacheKey = `kline_${secId}_${beg}_${end}`; 
+  
+  let cached = null;
+  try {
+    cached = await getCache(cacheKey);
+    if (cached && cached.date === todayStr) {
+      return cached.data;
+    }
+  } catch(cacheErr) {}
+  
+  let baseParams = `fields1=f1&fields2=f51,f53&klt=101&beg=${beg}&end=${end}&lmt=20000&_ts=${Date.now()}`;
+  let url = `https://push2his.eastmoney.com/api/qt/stock/kline/get?secid=${secId}&${baseParams}&fqt=1`;
+  
+  let data = [];
+  
+  // 1. 独立解耦拉取前复权数据 (fqt=1)
+  try {
+    hitNetworkThisTurn = true; 
+    let json = await jsonpRequest(url);
+    data = json?.data?.klines || [];
+  } catch(fqt1Err) {}
+  
+  // 2. 如果前复权报错或行数为 0，独立拉取不复权数据 (fqt=0) 容错
+  if (data.length === 0) {
+    try {
+      hitNetworkThisTurn = true;
+      let url2 = `https://push2his.eastmoney.com/api/qt/stock/kline/get?secid=${secId}&${baseParams}&fqt=0`;
+      let json2 = await jsonpRequest(url2);
+      data = json2?.data?.klines || [];
+    } catch(fqt0Err) {}
+  }
+
+  // 3. 跨市场分类纠偏重试
+  if (data.length === 0) {
+    let altSecId = secId.startsWith('0.') ? secId.replace('0.', '1.') : secId.startsWith('1.') ? secId.replace('1.', '0.') : null;
+    if (altSecId) {
+      let altUrl = `https://push2his.eastmoney.com/api/qt/stock/kline/get?secid=${altSecId}&${baseParams}&fqt=1`;
+      try {
+        hitNetworkThisTurn = true;
+        let altJson = await jsonpRequest(altUrl);
+        data = altJson?.data?.klines || [];
+        if (data.length === 0) {
+          let altUrl0 = altUrl.replace('fqt=1', 'fqt=0');
+          let altJson0 = await jsonpRequest(altUrl0);
+          data = altJson0?.data?.klines || [];
+        }
+      } catch(altErr) {}
+    }
+  }
+
+  // 4. 兼容美股多板块代号
+  if (data.length === 0 && secId.startsWith('105.')) { 
+    try {
+      hitNetworkThisTurn = true;
+      let altUrl = url.replace('105.', '106.'); 
+      let j3 = await jsonpRequest(altUrl); 
+      data = j3?.data?.klines || []; 
+      if(data.length === 0) {
+        let altUrl2 = url.replace('105.', '107.'); 
+        let j4 = await jsonpRequest(altUrl2); 
+        data = j4?.data?.klines || []; 
+      }
+    } catch(usErr) {}
+  }
+
+  // 5. 【新增】数据源切换：东方财富的所有变体都拿不到数据时，换一个完全独立的数据源（腾讯财经 gtimg.cn）再试一次。
+  if (data.length === 0) {
+    const tcCode = secIdToTcCode(secId);
+    if (tcCode) {
+      logGlobal(`东方财富未拿到数据，尝试切换至腾讯财经备用源 (${tcCode})...`, "warn");
+      try {
+        hitNetworkThisTurn = true;
+        const begISO = beg.replace(/(\d{4})(\d{2})(\d{2})/, '$1-$2-$3');
+        const endISO = end.replace(/(\d{4})(\d{2})(\d{2})/, '$1-$2-$3');
+        data = await fetchTencentPagedKline(tcCode, begISO, endISO);
+        if (data.length > 0) {
+          logGlobal(`腾讯财经返回成功，已分段补全该股票的行情`, "ok");
+          const spanCalendarDays = (new Date(endISO) - new Date(begISO)) / 86400000;
+          const firstReturnedDate = data[0].split(',')[0];
+          if (spanCalendarDays > 950 && firstReturnedDate > begISO) {
+            logGlobal(`提示: 腾讯财经分段后仍未覆盖完整区间，实际只覆盖到 ${firstReturnedDate} ~ ${endISO}，比请求的 ${begISO} 起始日要晚`, "warn");
+          }
+        } else {
+          logGlobal(`腾讯财经请求成功但解析为空`, "err");
+        }
+      } catch(tcErr) {
+        logGlobal(`腾讯财经备用源也失败: ${tcErr.message}`, "err");
+      }
+    }
+  }
+
+  if (data.length > 0) {
+    try {
+      await setCache(cacheKey, { date: todayStr, data: data });
+    } catch(cacheErr) {}
+    return data;
+  }
+  
+  return cached ? cached.data : [];
+}
+
+async function fetchKline(code, beg, end, retry = 0) {
+  const secId = getEmSecId(code);
+  try {
+    const klines = await fetchHistoryKline(secId, beg, end);
+    
+    if (klines && klines.length > 0) {
+      const begStr = beg.replace(/(\d{4})(\d{2})(\d{2})/, '$1-$2-$3');
+      const endStr = end.replace(/(\d{4})(\d{2})(\d{2})/, '$1-$2-$3');
+      
+      let filtered = klines.filter(k => {
+        const d = k.split(',')[0];
+        return d >= begStr && d <= endStr;
+      });
+      
+      if (filtered.length > 0) {
+        return {
+          dates: filtered.map(x => x.split(',')[0]),
+          closes: filtered.map(x => parseFloat(x.split(',')[1]))
+        };
+      } else {
+        const firstD = klines[0].split(',')[0];
+        const lastD = klines[klines.length - 1].split(',')[0];
+        logGlobal(`诊断: ${code} 实际拉取到 ${klines.length} 条K线，范围 ${firstD} ~ ${lastD}；但请求区间是 ${begStr} ~ ${endStr}，两者无交集`, "warn");
+        throw new Error(`日期过滤器扣减后数据为空 (区间内无交易)`);
+      }
+    } else {
+      throw new Error("无有效行情数据 (拉取数据行为空)");
+    }
+  } catch (err) {
+    if (retry < 2) { 
+      const waitMs = 1500 * (retry + 1);
+      logGlobal(`正在尝试重新连接 ${code} (重试间隔 ${(waitMs/1000).toFixed(1)} 秒)...`, "warn");
+      await new Promise(r => setTimeout(r, waitMs)); 
+      return fetchKline(code, beg, end, retry + 1);
+    }
+    throw err;
+  }
+}
+
+async function resolveStockInfo(query) {
+  const searchUrl = `https://searchapi.eastmoney.com/api/suggest/get?input=${encodeURIComponent(query)}&type=14&token=D43BF722C8E33BD5D50F639205545E43`;
+  try {
+    const json = await jsonpRequest(searchUrl);
+    if (json?.QuotationCodeTable?.Data?.[0]) {
+      const r = json.QuotationCodeTable.Data[0];
+      let suffix = "";
+      if (/^\d{5}$/.test(r.Code)) suffix = r.Code.startsWith('6') ? ".SH" : ".SZ"; 
+      else if (!/^\d+$/.test(r.Code)) suffix = ".US"; 
+      else { 
+        if(r.MarketType == "1") suffix = ".SH"; 
+        else if(r.MarketType == "2") suffix = ".SZ"; 
+        else if(r.MarketType == "5") suffix = ".HK"; 
+      }
+      return { code: r.Code + suffix, name: r.Name };
+    } else {
+      throw new Error("无数据");
+    }
+  } catch(e) {
+    throw e;
+  }
+}
+
+// ===== 全局作用域调试诊断接口声明结束 =====
+
+(function(){
+  const logEl = document.getElementById('log');
+  function log(msg, level='info'){
+    const div = document.createElement('div');
+    div.className = 't-' + level;
+    div.textContent = `[${new Date().toLocaleTimeString('zh-CN', {hour12:false})}] ${msg}`;
+    logEl.appendChild(div);
+    logEl.scrollTop = logEl.scrollHeight;
+    if(level !== 'info') document.getElementById('logBox').classList.add('show');
+  }
+  
+  // 注入全局日志通道引用
+  logGlobal = log;
+
+  // --- 配置持久化 (Token & GistID) ---
+  const ConfigManager = {
+    keys: { token: 'BT_GH_TOKEN', gistId: 'BT_GH_GIST_ID' },
+    
+    // 从同级目录下自动请求加载 gist_config.json 配置文件
+    async loadFromServer() {
+      try {
+        const res = await fetch('./gist_config.json');
+        if (res.ok) {
+          const cfg = await res.json();
+          let token = cfg.token || "";
+          let gistId = cfg.gistId || "";
+          
+          if (token.startsWith('base64:')) {
+            token = atob(token.substring(7));
+          }
+          
+          if (token) {
+            document.getElementById('ghToken').value = token;
+            localStorage.setItem(this.keys.token, token);
+          }
+          if (gistId) {
+            document.getElementById('ghGistId').value = gistId;
+            localStorage.setItem(this.keys.gistId, gistId);
+          }
+          log("已自动从服务端配置文件 (gist_config.json) 装载云同步密钥！", "ok");
+        } else {
+          this.loadFromLocal();
+        }
+      } catch (e) {
+        this.loadFromLocal(); // 降级从本地缓存读取
+      }
+    },
+
+    loadFromLocal() {
+      const token = localStorage.getItem(this.keys.token) || EMBEDDED_TOKEN;
+      const gistId = localStorage.getItem(this.keys.gistId) || EMBEDDED_GIST_ID;
+      document.getElementById('ghToken').value = token;
+      document.getElementById('ghGistId').value = gistId;
+    },
+
+    init() {
+      document.getElementById('ghToken').addEventListener('input', (e) => localStorage.setItem(this.keys.token, e.target.value));
+      document.getElementById('ghGistId').addEventListener('input', (e) => localStorage.setItem(this.keys.gistId, e.target.value));
+    }
+  };
+
+  ConfigManager.loadFromServer();
+  ConfigManager.init();
+  
+  // 开始日期初始化为较长样本区间，结束日期对齐今天
+  const today = new Date();
+  const endStr = today.toISOString().split('T')[0];
+  
+  document.getElementById('endDate').value = endStr;
+  document.getElementById('startDate').value = "2020-01-01";
+
+  const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+
+  // --- GitHub 云端同步逻辑 ---
+  const CloudSync = {
+    async save() {
+      const token = document.getElementById('ghToken').value;
+      const gistId = document.getElementById('ghGistId').value;
+      if(!token || !gistId) return alert("请先在高级设置中填写 GitHub Token 和 Gist ID");
+      log("云端同步中...");
+      try {
+        const data = FavManager.get();
+        const res = await fetch(`https://api.github.com/gists/${gistId}`, {
+          method: 'PATCH',
+          headers: { 'Authorization': `token ${token}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ files: { "stock_pool_v3.json": { content: JSON.stringify(data) } } })
+        });
+        if(res.ok) log("数据已成功同步至 GitHub", "ok"); else throw "fail";
+      } catch(e) { log("同步失败，请检查配置 and 网络", "err"); }
+    },
+    async fetch() {
+      const token = document.getElementById('ghToken').value;
+      const gistId = document.getElementById('ghGistId').value;
+      if(!token || !gistId) return alert("请先在高级设置中填写配置");
+      log("拉取数据中...");
+      try {
+        const res = await fetch(`https://api.github.com/gists/${gistId}`, { headers: { 'Authorization': `token ${token}` } });
+        const json = await res.json();
+        const content = JSON.parse(json.files["stock_pool_v3.json"].content);
+        FavManager.save(content);
+        log("云端拉取并同步本地成功", "ok");
+      } catch(e) { log("拉取失败", "err"); }
+    }
+  };
+  window.CloudSync = CloudSync;
+
+  const FavManager = {
+    key: 'BT_FAV_PRO_V3',
+    default: [{code:'600519.SH', name:'贵州茅台', tag:'白酒', selected:true},{code:'300750.SZ', name:'宁德时代', tag:'新能源', selected:true}],
+    get() { const d = localStorage.getItem(this.key); return d ? JSON.parse(d) : this.default; },
+    save(list) { localStorage.setItem(this.key, JSON.stringify(list)); this.render(); },
+    render() {
+      const list = this.get();
+      document.getElementById('favBody').innerHTML = list.map((item, index) => `
+        <tr class="${item.selected ? 'active' : ''}">
+          <td><input type="checkbox" ${item.selected ? 'checked' : ''} onchange="FavManager.toggle(${index})"></td>
+          <td>${item.name}<br><small>${item.code}</small></td>
+          <td><input type="text" class="fav-input-tag" style="background:transparent;border:1px solid transparent;color:inherit;width:100%" value="${item.tag || ''}" onchange="FavManager.updateTag(${index}, this.value)"></td>
+          <td><span class="fav-btn-del" onclick="FavManager.remove(${index})">×</span></td>
+        </tr>
+      `).join('');
+    },
+    batchSelect(s) { const list = this.get(); list.forEach(i => i.selected = s); this.save(list); },
+    inverseSelect() { const list = this.get(); list.forEach(i => i.selected = !i.selected); this.save(list); },
+    selectByQuery(q) { if(!q) return; const list = this.get(); list.forEach(i => { if((i.tag||"").includes(q) || i.name.includes(q)) i.selected = true; }); this.save(list); document.getElementById('groupSearch').value = ''; },
+    toggle(idx) { const list = this.get(); list[idx].selected = !list[idx].selected; this.save(list); },
+    remove(idx) { const list = this.get(); list.splice(idx,1); this.save(list); },
+    updateTag(idx, v) { const list = this.get(); list[idx].tag = v; localStorage.setItem(this.key, JSON.stringify(list)); },
+    async add(q, t) {
+      try {
+        const res = await resolveStockInfo(q);
+        const list = this.get();
+        list.push({ code: res.code, name: res.name, tag: t || '未分类', selected: true });
+        this.save(list);
+      } catch(e) { log("未识别到该股票", "err"); }
+    }
+  };
+  window.FavManager = FavManager;
+
+  let chartEq = null, chartWt = null;
+  const COLORS = ['#2bb673', '#e5484d', '#4299e1', '#9f7aea', '#ed64a6', '#ecc94b', '#4fd1c5'];
+
+  document.getElementById('runBtn').onclick = async function(){
+    const btn = this; btn.disabled = true;
+    logEl.innerHTML = ''; log("启动回测引擎...");
+    try {
+      const selected = FavManager.get().filter(i => i.selected);
+      if(!selected.length) throw new Error("请先勾选股票");
+      const beg = document.getElementById('startDate').value.replace(/-/g,'');
+      const end = document.getElementById('endDate').value.replace(/-/g,'');
+      
+      const begYear = parseInt(beg.slice(0,4)), endYear = parseInt(end.slice(0,4));
+      const nowYear = new Date().getFullYear();
+      if (!beg || !end || begYear < 1990 || begYear > nowYear + 1 || endYear < 1990 || endYear > nowYear + 1) {
+        throw new Error(`日期输入异常 (开始:${document.getElementById('startDate').value} 结束:${document.getElementById('endDate').value})，请重新点选日期`);
+      }
+      const cap = parseFloat(document.getElementById('capital').value);
+      const conf = {
+        mb: parseInt(document.getElementById('maBuy').value),
+        rise: parseInt(document.getElementById('riseFromBottom').value)/100,
+        look: parseInt(document.getElementById('bottomLookback').value),
+        comm: parseFloat(document.getElementById('commission').value)/100,
+        // 读取启动与退潮配置
+        blMa: parseInt(document.getElementById('blacklistMa').value),
+        belowPctLimit: parseInt(document.getElementById('belowPctLimit').value)/100,
+        belowDaysLimit: parseInt(document.getElementById('belowDaysLimit').value)
+      };
+
+      // ===== 【Smart Pacing 智能网络避让调度】：秒开缓存、防刷拦截双完美 =====
+      const stocks = [];
+      let consecutiveEmptyFails = 0;
+      for(const s of selected) { 
+        try { 
+          hitNetworkThisTurn = false; 
+          log(`正在同步行情: ${s.name}...`);
+          const kdata = await fetchKline(s.code, beg, end);
+          stocks.push({ code: s.code, name: s.name, ...kdata }); 
+          consecutiveEmptyFails = 0; 
+          
+          if (hitNetworkThisTurn) {
+            await sleep(1200); 
+          }
+        } catch(e){ 
+          log(`${s.name} 数据抓取失败 (${e.message})`, "warn"); 
+          if (e.message.includes("无有效行情数据")) {
+            consecutiveEmptyFails++;
+            if (consecutiveEmptyFails >= 2) {
+              log(`连续 ${consecutiveEmptyFails} 只股票均无法拉取到任何数据，大概率是触发了行情接口的限流，已停止剩余请求，请等几分钟后再重试`, "err");
+              break;
+            }
+          }
+        } 
+      }
+      
+      if(stocks.length === 0) throw new Error("无可用的历史行情数据");
+      if (stocks.some(s => s.dates.length < 252)) {
+        log("提示：部分标的样本少于 1 年，统计结果更容易被单一阶段行情影响", "warn");
+      }
+
+      const MathUtil = window.MathUtil || {
+        sma(v, n) {
+          let r = new Array(v.length).fill(null), sum = 0;
+          for (let i = 0; i < v.length; i++) {
+            sum += v[i]; if (i >= n) sum -= v[i - n];
+            if (i >= n - 1) r[i] = sum / n;
+          }
+          return r;
+        },
+        rollingMin(v, n) {
+          let r = new Array(v.length).fill(null);
+          for (let i = 0; i < v.length; i++) {
+            const lookback = n === 0 ? i : Math.min(i, n);
+            if (lookback <= 0) continue;
+            const start = i - lookback;
+            let m = Infinity;
+            for (let j = start; j < i; j++) if (v[j] < m) m = v[j];
+            r[i] = m === Infinity ? null : m;
+          }
+          return r;
+        },
+        maxDD(eq) {
+          let peak = -Infinity, mdd = 0;
+          for (const v of eq) { if (v > peak) peak = v; let dd = (v / peak) - 1; if (dd < mdd) mdd = dd; }
+          return mdd;
+        }
+      };
+
+      const results = stocks.map(ds => {
+        const maB = MathUtil.sma(ds.closes, conf.mb);
+        const maTarget = MathUtil.sma(ds.closes, conf.blMa);
+        const mins = MathUtil.rollingMin(ds.closes, conf.look);
+        const sigs = new Array(ds.dates.length).fill(false);
+        const trades = [];
+        const events = [];
+        let hold = false, bIdx = -1;
+        let openBuyReason = '';
+        let retired = false;
+        let belowDays = 0;
+        let belowMaxGap = 0;
+        let wasBelow = false;
+        let retreatReason = '';
+
+        for(let i = 0; i < ds.closes.length; i++){
+          const pr = ds.closes[i];
+          const mVal = maTarget[i];
+
+          if (mVal !== null && pr < mVal) {
+            const gapPct = (mVal - pr) / mVal;
+            if (!wasBelow) {
+              belowDays = 1;
+              belowMaxGap = gapPct;
+              wasBelow = true;
+            } else {
+              belowDays += 1;
+              belowMaxGap = Math.max(belowMaxGap, gapPct);
+            }
+
+            const shouldRetreat = belowDays > conf.belowDaysLimit || belowMaxGap > conf.belowPctLimit;
+            if (shouldRetreat && !retired) {
+              retired = true;
+              retreatReason = `收盘价连续跌破 ${conf.blMa} 日均线 ${belowDays} 天，期间最大跌破幅度 ${(belowMaxGap * 100).toFixed(2)}%，超过阈值：最大跌破幅度 ${conf.belowPctLimit * 100}% / 最大跌破天数 ${conf.belowDaysLimit} 天。`;
+              events.push({
+                date: ds.dates[i],
+                type: '进入退潮',
+                reason: retreatReason
+              });
+              if (hold) {
+                hold = false;
+                trades.push({
+                  bd: ds.dates[bIdx],
+                  bp: ds.closes[bIdx],
+                  sd: ds.dates[i],
+                  sp: pr,
+                  status: '已结清(退潮)',
+                  buyReason: openBuyReason,
+                  sellReason: `触发退潮卖出：${retreatReason}`
+                });
+                bIdx = -1;
+                openBuyReason = '';
+              }
+            }
+          } else {
+            if (wasBelow && belowDays > 0) {
+              const episodeReason = `本次跌破 ${conf.blMa} 日均线共 ${belowDays} 天，最大跌破幅度 ${(belowMaxGap * 100).toFixed(2)}%。`;
+              events.push({
+                date: ds.dates[i],
+                type: '跌破结束',
+                reason: episodeReason
+              });
+            }
+            wasBelow = false;
+            belowDays = 0;
+            belowMaxGap = 0;
+          }
+
+          if (!hold && !retired) {
+            const baseEntry = maB[i] && pr > maB[i] && mins[i] !== null && pr >= mins[i] * (1 + conf.rise);
+            if (baseEntry) {
+              hold = true;
+              bIdx = i;
+              openBuyReason = `收盘价 ${pr.toFixed(2)} 站上 ${conf.mb} 日均线，且高于近 ${conf.look} 日低点 ${mins[i].toFixed(2)} 的 ${((conf.rise) * 100).toFixed(2)}% 抬升阈值。`;
+              trades.push({
+                bd: ds.dates[i],
+                bp: pr,
+                sd: '',
+                sp: null,
+                status: '买入',
+                buyReason: openBuyReason,
+                sellReason: ''
+              });
+            }
+          }
+          sigs[i] = hold;
+        }
+
+        if (hold) trades.push({
+          bd: ds.dates[bIdx],
+          bp: ds.closes[bIdx],
+          sd: ds.dates[ds.dates.length - 1],
+          sp: ds.closes[ds.closes.length - 1],
+          status: '持仓中',
+          buyReason: openBuyReason,
+          sellReason: '回测结束时仍未触发退潮卖出。'
+        });
+        return { ...ds, sigs, trades, events };
+      });
+
+      const dateSet = new Set();
+      results.forEach(r => r.dates.forEach(d => dateSet.add(d)));
+      const dates = Array.from(dateSet).sort();
+
+      const lookups = results.map(r => {
+        const m = new Map();
+        r.dates.forEach((d, i) => m.set(d, { close: r.closes[i], sig: r.sigs[i] }));
+        return m;
+      });
+
+      let curEq = cap, strategyLine = [], benchmarkLine = [], weights = results.map(()=>[]), prevIdx = [];
+      let lastClose = results.map(() => null);
+      let lastSig = results.map(() => false);
+      let started = results.map(() => false);
+
+      for(let i=0; i<dates.length; i++){
+        const d = dates[i];
+        let dailyRetSum = 0;
+
+        if (i > 0 && prevIdx.length > 0) {
+          prevIdx.forEach(idx => {
+            const rec = lookups[idx].get(d);
+            if (rec && isFinite(rec.close) && lastClose[idx] && isFinite(lastClose[idx]) && lastClose[idx] > 0) {
+              dailyRetSum += (rec.close / lastClose[idx]) - 1;
+            }
+          });
+          curEq *= (1 + dailyRetSum / prevIdx.length);
+        }
+
+        results.forEach((r, idx) => {
+          const rec = lookups[idx].get(d);
+          if (rec) {
+            lastClose[idx] = rec.close;
+            lastSig[idx] = rec.sig;
+            started[idx] = true;
+          }
+        });
+
+        let curIdx = []; results.forEach((r, idx) => { if(started[idx] && lastSig[idx]) curIdx.push(idx); });
+        if(JSON.stringify(curIdx) !== JSON.stringify(prevIdx)) curEq *= (1 - conf.comm);
+        strategyLine.push(curEq);
+        const wPer = curIdx.length ? 100/curIdx.length : 0;
+        results.forEach((s,idx) => weights[idx].push(curIdx.includes(idx)?wPer:0));
+        prevIdx = curIdx;
+        benchmarkLine.push(results.reduce((sum, s, idx) => sum + ((cap/results.length)/s.closes[0]) * (started[idx] ? lastClose[idx] : s.closes[0]), 0));
+      }
+
+      document.getElementById('resultsArea').style.display = 'block';
+      const sRet = (curEq/cap-1)*100, sMDD = MathUtil.maxDD(strategyLine)*100;
+      const bRet = (benchmarkLine[benchmarkLine.length-1]/cap-1)*100, bMDD = MathUtil.maxDD(benchmarkLine)*100;
+      
+      document.getElementById('statsRow').innerHTML = `
+        <div class="stat"><div class="label">策略组合表现</div><div class="value ${sRet>=0?'pos':'neg'}">${sRet.toFixed(2)}%</div><div class="sub">回撤: <span class="neg">${sMDD.toFixed(2)}%</span></div></div>
+        <div class="stat"><div class="label">基准对照表现</div><div class="value ${bRet>=0?'pos':'neg'}">${bRet.toFixed(2)}%</div><div class="sub">回撤: <span class="neg">${bMDD.toFixed(2)}%</span></div></div>
+      `;
+
+      if(chartEq) chartEq.destroy();
+      chartEq = new Chart(document.getElementById('equityChart'), {
+        type:'line', data:{labels:dates, datasets:[
+          {label:'策略组合', data:strategyLine, borderColor:'#f0b429', borderWidth:2, pointRadius:0},
+          {label:'基准持有', data:benchmarkLine, borderColor:'#8a93a8', borderDash:[5,5], pointRadius:0, hidden:!document.getElementById('showBenchmark').checked}
+        ]},
+        options:{responsive:true,maintainAspectRatio:false,interaction:{mode:'index',intersect:false},scales:{x:{grid:{color:'#232938'},ticks:{color:'#8a93a8',maxTicksLimit:8}},y:{grid:{color:'#232938'},ticks:{color:'#8a93a8'}}}}
+      });
+
+      if(chartWt) chartWt.destroy();
+      chartWt = new Chart(document.getElementById('weightChart'), {
+        type:'line', data:{labels:dates, datasets:results.map((s,idx)=>({label:s.name,data:weights[idx],fill:true,pointRadius:0,borderWidth:1,backgroundColor:COLORS[idx%COLORS.length]+'88',borderColor:COLORS[idx%COLORS.length],stack:'s'}))},
+        options:{responsive:true,maintainAspectRatio:false,interaction:{mode:'index',intersect:false},plugins:{legend:{display:false}},scales:{y:{stacked:true,max:100,grid:{color:'#232938'},ticks:{color:'#8a93a8',callback:v=>v+'%'}},x:{display:false}}}
+      });
+
+      let h = '';
+      results.forEach(r => {
+        if(r.trades.length){
+          h += `<div class="stockblock"><h3>${r.code} ${r.name}</h3>`;
+          if (r.events && r.events.length) {
+            h += `<div style="margin-bottom:10px; padding:10px; border:1px solid var(--border); border-radius:6px; background:var(--panel-alt); font-size:11px; color:var(--text-dim); line-height:1.6;"><div style="color:var(--text); margin-bottom:6px;">状态切换原因</div>${r.events.map(e => `<div><span style="color:var(--amber)">${e.date}</span> · <span style="color:var(--blue)">${e.type}</span> · ${e.reason}</div>`).join('')}</div>`;
+          }
+          h += `<table><thead><tr><th>买入日期</th><th>买入价</th><th>卖出/当前</th><th>卖出价</th><th>收益%</th><th>状态</th><th>买入条件</th><th>卖出条件</th></tr></thead><tbody>`;
+          r.trades.forEach(t => {
+            const pv = t.sp ? (t.sp/t.bp-1)*100 : null;
+            h += `<tr>
+              <td>${t.bd}</td>
+              <td>${t.bp.toFixed(2)}</td>
+              <td>${t.sd || '-'}</td>
+              <td>${t.sp ? t.sp.toFixed(2) : '-'}</td>
+              <td class="${pv===null ? '' : (pv>=0?'pos':'neg')}">${pv===null ? '-' : pv.toFixed(2)+'%'}</td>
+              <td style="color:${t.status==='持仓中'?'#f0b429':'#8a93a8'}">${t.status}</td>
+              <td style="text-align:left; max-width:280px; white-space:normal; color:var(--text-dim)">${t.buyReason || '-'}</td>
+              <td style="text-align:left; max-width:280px; white-space:normal; color:var(--text-dim)">${t.sellReason || '-'}</td>
+            </tr>`;
+          });
+          h += `</tbody></table></div>`;
+        }
+      });
+      document.getElementById('stockDetails').innerHTML = h || '无交易记录';
+      log("回测成功", "ok");
+    } catch(e) { log(e.message, "err"); } finally { btn.disabled = false; }
+  };
+
+  document.getElementById('addFavBtn').onclick = async function(){
+    const codeInput = document.getElementById('newCode');
+    const tagInput = document.getElementById('newTag');
+    const q = codeInput.value.trim();
+    if (!q) { log("请先输入股票代码或名称", "warn"); return; }
+    const btn = this; btn.disabled = true; btn.textContent = '查询中...';
+    await FavManager.add(q, tagInput.value.trim());
+    btn.disabled = false; btn.textContent = '添加';
+    codeInput.value = ''; tagInput.value = '';
+  };
+  document.getElementById('newCode').addEventListener('keypress', e => { if (e.keyCode === 13) document.getElementById('addFavBtn').click(); });
+  document.getElementById('newTag').addEventListener('keypress', e => { if (e.keyCode === 13) document.getElementById('addFavBtn').click(); });
+
+  FavManager.render();
+})();
+</script>
+</body>
+</html>
